@@ -1,157 +1,157 @@
 <?php
-include '../db.php';
+require_once '../db.php';
+$selected_user_id = $_COOKIE['user_id'] ?? '';
 
-$selectedUserId = isset($_COOKIE['selected_user_id']) ? intval($_COOKIE['selected_user_id']) : null;
-
-if (isset($_POST['user_id']) && $_POST['user_id'] !== '') {
-    $selectedUserId = intval($_POST['user_id']);
-    setcookie('selected_user_id', $selectedUserId, time() + (14 * 24 * 60 * 60), '/');
-}
-
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bed_id'], $_POST['harvest_date'], $_POST['harvest_kg'], $_POST['loss_type_id'], $_POST['harvest_ratio'])) {
-    $stmt = mysqli_prepare($link, "INSERT INTO harvests (cycle_id, harvest_date, harvest_kg, loss_type_id, user_id, harvest_ratio) VALUES (?, ?, ?, ?, ?, ?)");
-    mysqli_stmt_bind_param($stmt, 'isd iid', $_POST['cycle_id'], $_POST['harvest_date'], $_POST['harvest_kg'], $_POST['loss_type_id'], $selectedUserId, $_POST['harvest_ratio']);
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bed_id'], $_POST['harvest_date'], $_POST['harvest_kg'], $_POST['loss_type_id'], $_POST['harvest_ratio'], $_POST['user_id'])) {
+    $stmt = mysqli_prepare($link, "INSERT INTO harvests (cycle_id, harvest_date, harvest_kg, loss_type_id, user_id, harvest_ratio, note) VALUES (?, ?, ?, ?, ?, ?, ?)");
+    mysqli_stmt_bind_param($stmt, 'isdiids', $_POST['cycle_id'], $_POST['harvest_date'], $_POST['harvest_kg'], $_POST['loss_type_id'], $_POST['user_id'], $_POST['harvest_ratio'], $_POST['note']);
     mysqli_stmt_execute($stmt);
     mysqli_stmt_close($stmt);
-    echo "<p>収穫データを登録しました。</p>";
+    echo "<div class='alert alert-success text-center m-3'>収穫データを登録しました。</div>";
 }
 ?>
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>収穫登録</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-<style>
-body { font-family: sans-serif; margin:10px; padding:5px; font-size:16px; overflow-x:hidden; }
-.ratio-group {}
-@media (max-width: 768px) {
-  body { font-size:16px; }
-  .form-group { margin-bottom:1rem; }
-  .form-label { display:block; margin-bottom:0.5rem; font-size:1rem; }
-  .form-control,
-  .form-select { font-size:1rem; padding:0.75rem; min-height:44px; }
-  .btn { font-size:1rem; padding:0.75rem; min-height:44px; }
-  .btn-block { display:block; width:100%; }
-  #cycle_history { overflow-x:auto; font-size:1rem; }
-  .ratio-group { display:flex; flex-wrap:wrap; }
-  .ratio-group .btn { flex:1 0 30%; margin:2px; }
-}
-</style>
-<script>
-function loadBeds() {
-    fetch('get_beds.php').then(res => res.json()).then(data => {
-        let bedSelect = document.getElementById('bed_id');
-        bedSelect.innerHTML = '';
-        data.forEach(b => {
-            let opt = document.createElement('option');
-            opt.value = b.id;
-            opt.textContent = b.name;
-            bedSelect.appendChild(opt);
-        });
-        if (bedSelect.options.length > 0) {
-            loadCycleHistory();
-        }
-    });
-}
-function loadLossTypes() {
-    fetch('get_loss_types.php').then(res => res.json()).then(data => {
-        let lossSelect = document.getElementById('loss_type_id');
-        lossSelect.innerHTML = '';
-        data.forEach(l => {
-            let opt = document.createElement('option');
-            opt.value = l.id;
-            opt.textContent = l.name;
-            lossSelect.appendChild(opt);
-        });
-    });
-}
-function loadCycleHistory() {
-    let bedId = document.getElementById('bed_id').value;
-    fetch('get_cycle_history.php?bed_id=' + bedId).then(res => res.json()).then(data => {
-        let histDiv = document.getElementById('cycle_history');
-        histDiv.innerHTML = '<h4>最新サイクル履歴</h4>';
-        if (data.length > 0) {
-            data.forEach(h => {
-                histDiv.innerHTML += '<div>' + h.date + ' - ' + h.action + '</div>';
-            });
-        } else {
-            histDiv.innerHTML += '<div>履歴なし</div>';
-        }
-    });
-}
-window.onload = function() {
-    loadBeds();
-    loadLossTypes();
-}
-</script>
+  <meta charset="UTF-8">
+  <title>収穫入力（マスタDB対応）</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
 </head>
 <body>
-<div class="container">
-<h2 class="mb-4">収穫登録</h2>
-<form method="post">
-    <div class="form-group">
-        <label for="user_id" class="form-label">従業員</label>
-        <select name="user_id" id="user_id" class="form-select" onchange="this.form.submit()">
-            <option value="">選択してください</option>
-            <?php
-            $result = mysqli_query($link, "SELECT id, name FROM users");
-            while ($u = mysqli_fetch_assoc($result)) {
-                $sel = ($u['id'] == $selectedUserId) ? 'selected' : '';
-                echo "<option value='{$u['id']}' {$sel}>{$u['name']}</option>";
-            }
-            ?>
-        </select>
+<div class="container py-4">
+  <h4 class="mb-4 text-primary">🌱 収穫入力</h4>
+  <form method="POST">
+    <!-- 登録者 -->
+    <div class="mb-4">
+      <label for="user_id" class="form-label fs-5">登録者（担当）</label>
+      <select class="form-select form-select-lg" name="user_id" id="user_id" required onchange="saveUserCookie()">
+        <option value="">選択してください</option>
+        <?php
+        $res = mysqli_query($link, "SELECT id, name FROM users WHERE active=1 ORDER BY name");
+        while ($u = mysqli_fetch_assoc($res)) {
+            $sel = ($u['id'] == $selected_user_id) ? 'selected' : '';
+            echo "<option value='{$u['id']}' {$sel}>{$u['name']}</option>";
+        }
+        ?>
+      </select>
     </div>
 
-    <div class="form-group">
-        <label for="bed_id" class="form-label">ベッド</label>
-        <select name="bed_id" id="bed_id" class="form-select" onchange="loadCycleHistory()"></select>
-    </div>
-    <div id="cycle_history" class="mb-3"></div>
-
-    <div class="form-group">
-        <label for="harvest_date" class="form-label">収穫日</label>
-        <input type="date" name="harvest_date" id="harvest_date" class="form-control" required>
-    </div>
-
-    <div class="form-group">
-        <label for="harvest_kg" class="form-label">収穫量(kg)</label>
-        <input type="number" step="0.1" name="harvest_kg" id="harvest_kg" class="form-control" required>
+    <!-- ベッド -->
+    <div class="mb-4">
+      <label for="bed" class="form-label fs-5">ベッド名</label>
+      <select id="bed" name="bed_id" class="form-select form-select-lg" required>
+        <option value="">選択してください</option>
+        <?php
+        $res = mysqli_query($link, "SELECT id, name FROM beds WHERE active=1 ORDER BY name");
+        while ($b = mysqli_fetch_assoc($res)) {
+            echo "<option value='{$b['id']}'>{$b['name']}</option>";
+        }
+        ?>
+      </select>
     </div>
 
-    <div class="form-group">
-        <label for="loss_type_id" class="form-label">廃棄区分</label>
-        <select name="loss_type_id" id="loss_type_id" class="form-select"></select>
+    <!-- サイクル履歴表示 -->
+    <div id="cycle_history" class="mb-4 p-3 bg-light border rounded" style="display:none;">
+      <h6>サイクル履歴</h6>
+      <div id="cycle_history_content">選択したベッドの履歴を表示します。</div>
     </div>
 
-    <div class="form-group">
-        <label class="form-label">収穫面積割合</label>
-        <div class="btn-group w-100 flex-wrap ratio-group" role="group">
-            <input type="radio" class="btn-check" name="harvest_ratio" id="ratio25" value="0.25">
-            <label class="btn btn-outline-primary mb-2" for="ratio25">1/4</label>
-
-            <input type="radio" class="btn-check" name="harvest_ratio" id="ratio33" value="0.33">
-            <label class="btn btn-outline-primary mb-2" for="ratio33">1/3</label>
-
-            <input type="radio" class="btn-check" name="harvest_ratio" id="ratio50" value="0.5">
-            <label class="btn btn-outline-primary mb-2" for="ratio50">1/2</label>
-
-            <input type="radio" class="btn-check" name="harvest_ratio" id="ratio66" value="0.66">
-            <label class="btn btn-outline-primary mb-2" for="ratio66">2/3</label>
-
-            <input type="radio" class="btn-check" name="harvest_ratio" id="ratio75" value="0.75">
-            <label class="btn btn-outline-primary mb-2" for="ratio75">3/4</label>
-
-            <input type="radio" class="btn-check" name="harvest_ratio" id="ratio100" value="1.0">
-            <label class="btn btn-outline-primary mb-2" for="ratio100">全面</label>
-        </div>
+    <!-- 収穫日 -->
+    <div class="mb-4">
+      <label for="harvest_date" class="form-label fs-5">収穫日</label>
+      <input type="date" id="harvest_date" name="harvest_date" class="form-control form-control-lg" required>
     </div>
 
-    <input type="hidden" name="cycle_id" value="1">
-    <button type="submit" class="btn btn-primary btn-lg btn-block">登録</button>
-</form>
+    <!-- 面積比 -->
+    <div class="mb-4">
+      <label class="form-label fs-5">収穫面積比</label><br>
+      <div class="btn-group w-100" role="group">
+        <input type="radio" class="btn-check" name="harvest_ratio" id="r1" value="0.25" required>
+        <label class="btn btn-outline-secondary" for="r1">1/4</label>
+        <input type="radio" class="btn-check" name="harvest_ratio" id="r2" value="0.33">
+        <label class="btn btn-outline-secondary" for="r2">1/3</label>
+        <input type="radio" class="btn-check" name="harvest_ratio" id="r3" value="0.5">
+        <label class="btn btn-outline-secondary" for="r3">1/2</label>
+        <input type="radio" class="btn-check" name="harvest_ratio" id="r4" value="0.66">
+        <label class="btn btn-outline-secondary" for="r4">2/3</label>
+        <input type="radio" class="btn-check" name="harvest_ratio" id="r5" value="0.75">
+        <label class="btn btn-outline-secondary" for="r5">3/4</label>
+        <input type="radio" class="btn-check" name="harvest_ratio" id="r6" value="1.0">
+        <label class="btn btn-outline-secondary" for="r6">全体</label>
+      </div>
+    </div>
+
+    <!-- 収穫量 -->
+    <div class="mb-4">
+      <label for="harvest_kg" class="form-label fs-5">収穫量（kg）</label>
+      <input type="number" step="0.1" class="form-control form-control-lg" name="harvest_kg" required>
+    </div>
+
+    <!-- 廃棄・ゴミ区分 -->
+    <div class="mb-4">
+      <label for="loss_type_id" class="form-label fs-5">廃棄・ゴミ区分</label>
+      <select class="form-select form-select-lg" name="loss_type_id" required>
+        <?php
+        $res = mysqli_query($link, "SELECT id, name FROM loss_types ORDER BY id");
+        while ($lt = mysqli_fetch_assoc($res)) {
+            echo "<option value='{$lt['id']}'>{$lt['name']}</option>";
+        }
+        ?>
+      </select>
+    </div>
+
+    <!-- 備考 -->
+    <div class="mb-4">
+      <label for="note" class="form-label fs-5">備考</label>
+      <textarea class="form-control" name="note" rows="3"></textarea>
+    </div>
+
+    <input type="hidden" name="cycle_id" id="cycle_id" value="">
+    <div class="d-grid">
+      <button type="submit" class="btn btn-primary btn-lg">登録</button>
+    </div>
+  </form>
 </div>
+
+<script>
+function saveUserCookie() {
+  const userId = document.getElementById('user_id').value;
+  if (userId) {
+    const days = 14;
+    const d = new Date();
+    d.setTime(d.getTime() + (days*24*60*60*1000));
+    document.cookie = "user_id=" + userId + "; expires=" + d.toUTCString() + "; path=/";
+  }
+}
+
+document.getElementById('harvest_date').valueAsDate = new Date();
+
+document.getElementById('bed').addEventListener('change', function() {
+  const bedId = this.value;
+  if (!bedId) return;
+
+  fetch('get_cycle_history.php?bed_id=' + bedId)
+    .then(response => response.json())
+    .then(data => {
+      let html = `<p>播種日: ${data.sow_date || '-'}</p>`;
+      html += `<p>定植日: ${data.plant_date || '-'}</p>`;
+      if (data.harvests && data.harvests.length > 0) {
+        html += '<ul>';
+        data.harvests.forEach(h => {
+          html += `<li>${h.harvest_date} - ${h.harvest_kg}kg</li>`;
+        });
+        html += '</ul>';
+      } else {
+        html += '<p>部分収穫はまだありません。</p>';
+      }
+      document.getElementById('cycle_history_content').innerHTML = html;
+      document.getElementById('cycle_history').style.display = 'block';
+      if (data.cycle_id) {
+        document.getElementById('cycle_id').value = data.cycle_id;
+      }
+    });
+});
+</script>
 </body>
 </html>
