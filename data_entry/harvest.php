@@ -24,44 +24,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bed_id'], $_POST['har
 <title>収穫登録</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
 <style>
-body { font-family: sans-serif; margin: 10px; padding: 5px; font-size: 16px; }
-.ratio-group { display: flex; justify-content: space-between; margin-top: 10px; }
+body { font-family: sans-serif; margin:10px; padding:5px; font-size:16px; overflow-x:hidden; }
+.ratio-group {}
 @media (max-width: 768px) {
-    .form-group {
-      margin-bottom: 1rem;
-    }
-    .form-label {
-      display: block;
-      margin-bottom: 0.5rem;
-      font-size: 1rem;
-    }
-    .form-control,
-    .form-select {
-      font-size: 1rem;
-      padding: 0.75rem;
-      min-height: 44px;
-    }
-    .form-check-input {
-      width: 1.25rem;
-      height: 1.25rem;
-    }
-    .form-check-label {
-      font-size: 1rem;
-      margin-left: 0.5rem;
-    }
-    .btn {
-      font-size: 1rem;
-      padding: 0.75rem;
-      min-height: 44px;
-    }
-    .btn-block {
-      display: block;
-      width: 100%;
-    }
-    .btn + .btn {
-      margin-top: 0.5rem;
-    }
-  }
+  body { font-size:16px; }
+  .form-group { margin-bottom:1rem; }
+  .form-label { display:block; margin-bottom:0.5rem; font-size:1rem; }
+  .form-control,
+  .form-select { font-size:1rem; padding:0.75rem; min-height:44px; }
+  .btn { font-size:1rem; padding:0.75rem; min-height:44px; }
+  .btn-block { display:block; width:100%; }
+  #cycle_history { overflow-x:auto; font-size:1rem; }
+  .ratio-group { display:flex; flex-wrap:wrap; }
+  .ratio-group .btn { flex:1 0 30%; margin:2px; }
+}
 </style>
 <script>
 function loadBeds() {
@@ -74,6 +50,9 @@ function loadBeds() {
             opt.textContent = b.name;
             bedSelect.appendChild(opt);
         });
+        if (bedSelect.options.length > 0) {
+            loadCycleHistory();
+        }
     });
 }
 function loadLossTypes() {
@@ -92,10 +71,14 @@ function loadCycleHistory() {
     let bedId = document.getElementById('bed_id').value;
     fetch('get_cycle_history.php?bed_id=' + bedId).then(res => res.json()).then(data => {
         let histDiv = document.getElementById('cycle_history');
-        histDiv.innerHTML = '<h4>サイクル履歴</h4>';
-        data.forEach(h => {
-            histDiv.innerHTML += '<div>' + h.date + ' - ' + h.action + '</div>';
-        });
+        histDiv.innerHTML = '<h4>最新サイクル履歴</h4>';
+        if (data.length > 0) {
+            data.forEach(h => {
+                histDiv.innerHTML += '<div>' + h.date + ' - ' + h.action + '</div>';
+            });
+        } else {
+            histDiv.innerHTML += '<div>履歴なし</div>';
+        }
     });
 }
 window.onload = function() {
@@ -126,6 +109,7 @@ window.onload = function() {
         <label for="bed_id" class="form-label">ベッド</label>
         <select name="bed_id" id="bed_id" class="form-select" onchange="loadCycleHistory()"></select>
     </div>
+    <div id="cycle_history" class="mb-3"></div>
 
     <div class="form-group">
         <label for="harvest_date" class="form-label">収穫日</label>
@@ -144,39 +128,30 @@ window.onload = function() {
 
     <div class="form-group">
         <label class="form-label">収穫面積割合</label>
-        <div class="ratio-group">
-            <div class="form-check form-check-inline">
-                <input class="form-check-input" type="radio" name="harvest_ratio" id="ratio25" value="0.25">
-                <label class="form-check-label" for="ratio25">1/4</label>
-            </div>
-            <div class="form-check form-check-inline">
-                <input class="form-check-input" type="radio" name="harvest_ratio" id="ratio33" value="0.33">
-                <label class="form-check-label" for="ratio33">1/3</label>
-            </div>
-            <div class="form-check form-check-inline">
-                <input class="form-check-input" type="radio" name="harvest_ratio" id="ratio50" value="0.5">
-                <label class="form-check-label" for="ratio50">1/2</label>
-            </div>
-            <div class="form-check form-check-inline">
-                <input class="form-check-input" type="radio" name="harvest_ratio" id="ratio66" value="0.66">
-                <label class="form-check-label" for="ratio66">2/3</label>
-            </div>
-            <div class="form-check form-check-inline">
-                <input class="form-check-input" type="radio" name="harvest_ratio" id="ratio75" value="0.75">
-                <label class="form-check-label" for="ratio75">3/4</label>
-            </div>
-            <div class="form-check form-check-inline">
-                <input class="form-check-input" type="radio" name="harvest_ratio" id="ratio100" value="1.0">
-                <label class="form-check-label" for="ratio100">全面</label>
-            </div>
+        <div class="btn-group w-100 flex-wrap ratio-group" role="group">
+            <input type="radio" class="btn-check" name="harvest_ratio" id="ratio25" value="0.25">
+            <label class="btn btn-outline-primary mb-2" for="ratio25">1/4</label>
+
+            <input type="radio" class="btn-check" name="harvest_ratio" id="ratio33" value="0.33">
+            <label class="btn btn-outline-primary mb-2" for="ratio33">1/3</label>
+
+            <input type="radio" class="btn-check" name="harvest_ratio" id="ratio50" value="0.5">
+            <label class="btn btn-outline-primary mb-2" for="ratio50">1/2</label>
+
+            <input type="radio" class="btn-check" name="harvest_ratio" id="ratio66" value="0.66">
+            <label class="btn btn-outline-primary mb-2" for="ratio66">2/3</label>
+
+            <input type="radio" class="btn-check" name="harvest_ratio" id="ratio75" value="0.75">
+            <label class="btn btn-outline-primary mb-2" for="ratio75">3/4</label>
+
+            <input type="radio" class="btn-check" name="harvest_ratio" id="ratio100" value="1.0">
+            <label class="btn btn-outline-primary mb-2" for="ratio100">全面</label>
         </div>
     </div>
 
     <input type="hidden" name="cycle_id" value="1">
     <button type="submit" class="btn btn-primary btn-lg btn-block">登録</button>
 </form>
-
-<div id="cycle_history" class="mt-4"></div>
 </div>
 </body>
 </html>
