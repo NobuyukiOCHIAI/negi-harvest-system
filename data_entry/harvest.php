@@ -19,6 +19,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bed_id'], $_POST['har
   <title>収穫入力（マスタDB対応）</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="mobile-ui.css">
 </head>
 <body>
 <div class="container py-4">
@@ -54,7 +55,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bed_id'], $_POST['har
     </div>
 
     <!-- サイクル履歴表示 -->
-    <div id="cycle_history" class="mb-4 p-3 bg-light border rounded" style="display:none;">
+    <div id="cycle_history" class="mb-4 p-3 bg-light border rounded">
       <h6>サイクル履歴</h6>
       <div id="cycle_history_content">選択したベッドの履歴を表示します。</div>
     </div>
