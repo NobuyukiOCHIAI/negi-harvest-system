@@ -19,7 +19,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bed_id'], $_POST['har
   <title>収穫入力（マスタDB対応）</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link rel="stylesheet" href="mobile-ui.css">
+  <link rel="stylesheet" href="../css/mobile-ui.css">
 </head>
 <body>
 <div class="container py-4">
