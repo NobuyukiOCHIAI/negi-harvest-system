@@ -1,13 +1,13 @@
 <?php
 require_once '../db.php';
-$selected_user_id = $_COOKIE['user_id'] ?? '';
+$selected_user_id = $_COOKIE['gf_fc_useit_id'] ?? '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bed_id'], $_POST['harvest_date'], $_POST['harvest_kg'], $_POST['loss_type_id'], $_POST['harvest_ratio'], $_POST['user_id'])) {
     $stmt = mysqli_prepare($link, "INSERT INTO harvests (cycle_id, harvest_date, harvest_kg, loss_type_id, user_id, harvest_ratio, note) VALUES (?, ?, ?, ?, ?, ?, ?)");
     mysqli_stmt_bind_param($stmt, 'isdiids', $_POST['cycle_id'], $_POST['harvest_date'], $_POST['harvest_kg'], $_POST['loss_type_id'], $_POST['user_id'], $_POST['harvest_ratio'], $_POST['note']);
     mysqli_stmt_execute($stmt);
     mysqli_stmt_close($stmt);
-    setcookie('user_id', $_POST['user_id'], time() + (60 * 60 * 24 * 14), '/');
+    setcookie('gf_fc_useit_id', $_POST['user_id'], time() + (60 * 60 * 24 * 14), '/');
     $selected_user_id = $_POST['user_id'];
     echo "<div class='alert alert-success text-center m-3'>収穫データを登録しました。</div>";
 }
@@ -120,11 +120,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bed_id'], $_POST['har
 <script>
 function saveUserCookie() {
   const userId = document.getElementById('user_id').value;
+  console.log('saveUserCookie called with userId:', userId);
   if (userId) {
     const days = 14;
     const d = new Date();
     d.setTime(d.getTime() + (days*24*60*60*1000));
-    document.cookie = "user_id=" + userId + "; expires=" + d.toUTCString() + "; path=/";
+    document.cookie = "gf_fc_useit_id=" + userId + "; expires=" + d.toUTCString() + "; path=/";
+    console.log('gf_fc_useit_id cookie saved for', days, 'days');
+  } else {
+    console.log('gf_fc_useit_id not set, cookie not saved');
   }
 }
 
