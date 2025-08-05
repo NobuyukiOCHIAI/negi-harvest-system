@@ -11,6 +11,7 @@ if (!$selected_user_id && !empty($_SERVER['HTTP_COOKIE'])) {
     }
 }
 
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bed_id'], $_POST['harvest_date'], $_POST['harvest_kg'], $_POST['loss_type_id'], $_POST['harvest_ratio'], $_POST['user_id'])) {
     $stmt = mysqli_prepare($link, "INSERT INTO harvests (cycle_id, harvest_date, harvest_kg, loss_type_id, user_id, harvest_ratio, note) VALUES (?, ?, ?, ?, ?, ?, ?)");
     mysqli_stmt_bind_param($stmt, 'isdiids', $_POST['cycle_id'], $_POST['harvest_date'], $_POST['harvest_kg'], $_POST['loss_type_id'], $_POST['user_id'], $_POST['harvest_ratio'], $_POST['note']);
