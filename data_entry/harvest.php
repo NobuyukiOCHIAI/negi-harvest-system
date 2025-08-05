@@ -1,13 +1,33 @@
 <?php
 require_once '../db.php';
 $selected_user_id = $_COOKIE['user_id'] ?? '';
+$cookie_error = '';
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bed_id'], $_POST['harvest_date'], $_POST['harvest_kg'], $_POST['loss_type_id'], $_POST['harvest_ratio'], $_POST['user_id'])) {
+if (headers_sent($hs_file, $hs_line)) {
+    $cookie_error = "{$hs_file} の {$hs_line} 行で出力が開始されているため、Cookie を設定できません。";
+}
+
+if (
+    $_SERVER['REQUEST_METHOD'] === 'POST' &&
+    isset(
+        $_POST['bed_id'],
+        $_POST['harvest_date'],
+        $_POST['harvest_kg'],
+        $_POST['loss_type_id'],
+        $_POST['harvest_ratio'],
+        $_POST['user_id']
+    )
+) {
     $stmt = mysqli_prepare($link, "INSERT INTO harvests (cycle_id, harvest_date, harvest_kg, loss_type_id, user_id, harvest_ratio, note) VALUES (?, ?, ?, ?, ?, ?, ?)");
     mysqli_stmt_bind_param($stmt, 'isdiids', $_POST['cycle_id'], $_POST['harvest_date'], $_POST['harvest_kg'], $_POST['loss_type_id'], $_POST['user_id'], $_POST['harvest_ratio'], $_POST['note']);
     mysqli_stmt_execute($stmt);
     mysqli_stmt_close($stmt);
-    setcookie('user_id', $_POST['user_id'], time() + (60 * 60 * 24 * 14), '/');
+    if (!setcookie('user_id', $_POST['user_id'], time() + (60 * 60 * 24 * 14), '/')) {
+        $cookie_error = 'Cookie の設定に失敗しました。';
+        if (headers_sent($hs_file, $hs_line)) {
+            $cookie_error .= " {$hs_file} の {$hs_line} 行で出力が開始されています。";
+        }
+    }
     $selected_user_id = $_POST['user_id'];
     echo "<div class='alert alert-success text-center m-3'>収穫データを登録しました。</div>";
 }
@@ -23,6 +43,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bed_id'], $_POST['har
 </head>
 <body>
 <div class="container py-4">
+<?php if ($cookie_error): ?>
+  <div class="alert alert-danger text-center m-3"><?php echo htmlspecialchars($cookie_error, ENT_QUOTES, 'UTF-8'); ?></div>
+<?php endif; ?>
   <h4 class="mb-4 text-primary">🌱 収穫入力</h4>
   <form method="POST">
     <!-- 登録者 -->
@@ -120,11 +143,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bed_id'], $_POST['har
 <script>
 function saveUserCookie() {
   const userId = document.getElementById('user_id').value;
+  console.log('saveUserCookie called with userId:', userId);
   if (userId) {
     const days = 14;
     const d = new Date();
     d.setTime(d.getTime() + (days*24*60*60*1000));
     document.cookie = "user_id=" + userId + "; expires=" + d.toUTCString() + "; path=/";
+    console.log('user_id cookie set to', userId, 'expires', d.toUTCString());
+  } else {
+    console.log('No user selected; cookie not set');
   }
 }
 
