@@ -1,0 +1,9 @@
+<?php
+$link = mysqli_connect('localhost', 'username', 'password');
+if (mysqli_connect_errno() > 0) {
+    echo "DB Connection Error";
+    exit;
+}
+mysqli_select_db($link, 'database_name');
+mysqli_set_charset($link, 'utf8');
+?>
