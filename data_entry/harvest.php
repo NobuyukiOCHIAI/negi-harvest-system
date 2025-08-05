@@ -22,13 +22,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bed_id'], $_POST['har
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>収穫登録</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
 <style>
 body { font-family: sans-serif; margin: 10px; padding: 5px; font-size: 16px; }
-label { display: block; margin-top: 10px; }
-select, input { width: 100%; padding: 5px; font-size: 16px; }
-button { margin-top: 15px; padding: 10px; font-size: 16px; width: 100%; }
 .ratio-group { display: flex; justify-content: space-between; margin-top: 10px; }
-.ratio-group label { flex: 1; text-align: center; }
+@media (max-width: 768px) {
+    .form-group {
+      margin-bottom: 1rem;
+    }
+    .form-label {
+      display: block;
+      margin-bottom: 0.5rem;
+      font-size: 1rem;
+    }
+    .form-control,
+    .form-select {
+      font-size: 1rem;
+      padding: 0.75rem;
+      min-height: 44px;
+    }
+    .form-check-input {
+      width: 1.25rem;
+      height: 1.25rem;
+    }
+    .form-check-label {
+      font-size: 1rem;
+      margin-left: 0.5rem;
+    }
+    .btn {
+      font-size: 1rem;
+      padding: 0.75rem;
+      min-height: 44px;
+    }
+    .btn-block {
+      display: block;
+      width: 100%;
+    }
+    .btn + .btn {
+      margin-top: 0.5rem;
+    }
+  }
 </style>
 <script>
 function loadBeds() {
@@ -72,46 +105,78 @@ window.onload = function() {
 </script>
 </head>
 <body>
-<h2>収穫登録</h2>
+<div class="container">
+<h2 class="mb-4">収穫登録</h2>
 <form method="post">
-    <label>従業員</label>
-    <select name="user_id" onchange="this.form.submit()">
-        <option value="">選択してください</option>
-        <?php
-        $result = mysqli_query($link, "SELECT id, name FROM users");
-        while ($u = mysqli_fetch_assoc($result)) {
-            $sel = ($u['id'] == $selectedUserId) ? 'selected' : '';
-            echo "<option value='{$u['id']}' {$sel}>{$u['name']}</option>";
-        }
-        ?>
-    </select>
+    <div class="form-group">
+        <label for="user_id" class="form-label">従業員</label>
+        <select name="user_id" id="user_id" class="form-select" onchange="this.form.submit()">
+            <option value="">選択してください</option>
+            <?php
+            $result = mysqli_query($link, "SELECT id, name FROM users");
+            while ($u = mysqli_fetch_assoc($result)) {
+                $sel = ($u['id'] == $selectedUserId) ? 'selected' : '';
+                echo "<option value='{$u['id']}' {$sel}>{$u['name']}</option>";
+            }
+            ?>
+        </select>
+    </div>
 
-    <label>ベッド</label>
-    <select name="bed_id" id="bed_id" onchange="loadCycleHistory()"></select>
+    <div class="form-group">
+        <label for="bed_id" class="form-label">ベッド</label>
+        <select name="bed_id" id="bed_id" class="form-select" onchange="loadCycleHistory()"></select>
+    </div>
 
-    <label>収穫日</label>
-    <input type="date" name="harvest_date" required>
+    <div class="form-group">
+        <label for="harvest_date" class="form-label">収穫日</label>
+        <input type="date" name="harvest_date" id="harvest_date" class="form-control" required>
+    </div>
 
-    <label>収穫量(kg)</label>
-    <input type="number" step="0.1" name="harvest_kg" required>
+    <div class="form-group">
+        <label for="harvest_kg" class="form-label">収穫量(kg)</label>
+        <input type="number" step="0.1" name="harvest_kg" id="harvest_kg" class="form-control" required>
+    </div>
 
-    <label>廃棄区分</label>
-    <select name="loss_type_id" id="loss_type_id"></select>
+    <div class="form-group">
+        <label for="loss_type_id" class="form-label">廃棄区分</label>
+        <select name="loss_type_id" id="loss_type_id" class="form-select"></select>
+    </div>
 
-    <label>収穫面積割合</label>
-    <div class="ratio-group">
-        <label><input type="radio" name="harvest_ratio" value="0.25">1/4</label>
-        <label><input type="radio" name="harvest_ratio" value="0.33">1/3</label>
-        <label><input type="radio" name="harvest_ratio" value="0.5">1/2</label>
-        <label><input type="radio" name="harvest_ratio" value="0.66">2/3</label>
-        <label><input type="radio" name="harvest_ratio" value="0.75">3/4</label>
-        <label><input type="radio" name="harvest_ratio" value="1.0">全面</label>
+    <div class="form-group">
+        <label class="form-label">収穫面積割合</label>
+        <div class="ratio-group">
+            <div class="form-check form-check-inline">
+                <input class="form-check-input" type="radio" name="harvest_ratio" id="ratio25" value="0.25">
+                <label class="form-check-label" for="ratio25">1/4</label>
+            </div>
+            <div class="form-check form-check-inline">
+                <input class="form-check-input" type="radio" name="harvest_ratio" id="ratio33" value="0.33">
+                <label class="form-check-label" for="ratio33">1/3</label>
+            </div>
+            <div class="form-check form-check-inline">
+                <input class="form-check-input" type="radio" name="harvest_ratio" id="ratio50" value="0.5">
+                <label class="form-check-label" for="ratio50">1/2</label>
+            </div>
+            <div class="form-check form-check-inline">
+                <input class="form-check-input" type="radio" name="harvest_ratio" id="ratio66" value="0.66">
+                <label class="form-check-label" for="ratio66">2/3</label>
+            </div>
+            <div class="form-check form-check-inline">
+                <input class="form-check-input" type="radio" name="harvest_ratio" id="ratio75" value="0.75">
+                <label class="form-check-label" for="ratio75">3/4</label>
+            </div>
+            <div class="form-check form-check-inline">
+                <input class="form-check-input" type="radio" name="harvest_ratio" id="ratio100" value="1.0">
+                <label class="form-check-label" for="ratio100">全面</label>
+            </div>
+        </div>
     </div>
 
     <input type="hidden" name="cycle_id" value="1">
-    <button type="submit">登録</button>
+    <button type="submit" class="btn btn-primary btn-lg btn-block">登録</button>
 </form>
 
-<div id="cycle_history" style="margin-top:20px;"></div>
+<div id="cycle_history" class="mt-4"></div>
+</div>
 </body>
 </html>
