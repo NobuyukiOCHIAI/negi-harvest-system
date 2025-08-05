@@ -88,13 +88,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bed_id'], $_POST['har
     <!-- 収穫量 -->
     <div class="mb-4">
       <label for="harvest_kg" class="form-label fs-5">収穫量（kg）</label>
-      <input type="number" step="0.1" class="form-control form-control-lg" name="harvest_kg" required>
+      <input type="number" step="0.1" class="form-control form-control-lg" name="harvest_kg" id="harvest_kg" required>
     </div>
 
     <!-- 廃棄・ゴミ区分 -->
     <div class="mb-4">
       <label for="loss_type_id" class="form-label fs-5">廃棄・ゴミ区分</label>
-      <select class="form-select form-select-lg" name="loss_type_id" required>
+      <select class="form-select form-select-lg" name="loss_type_id" id="loss_type_id" required>
         <?php
         $res = mysqli_query($link, "SELECT id, name FROM loss_types ORDER BY id");
         while ($lt = mysqli_fetch_assoc($res)) {
@@ -107,7 +107,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bed_id'], $_POST['har
     <!-- 備考 -->
     <div class="mb-4">
       <label for="note" class="form-label fs-5">備考</label>
-      <textarea class="form-control" name="note" rows="3"></textarea>
+      <textarea class="form-control" name="note" id="note" rows="3"></textarea>
     </div>
 
     <input type="hidden" name="cycle_id" id="cycle_id" value="">
