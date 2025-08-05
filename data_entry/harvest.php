@@ -120,11 +120,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bed_id'], $_POST['har
 <script>
 function saveUserCookie() {
   const userId = document.getElementById('user_id').value;
+  console.log('saveUserCookie called with userId:', userId);
   if (userId) {
     const days = 14;
     const d = new Date();
     d.setTime(d.getTime() + (days*24*60*60*1000));
     document.cookie = "user_id=" + userId + "; expires=" + d.toUTCString() + "; path=/";
+    console.log('user_id cookie saved for', days, 'days');
+  } else {
+    console.log('user_id not set, cookie not saved');
   }
 }
 
