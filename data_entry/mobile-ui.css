@@ -1,0 +1,50 @@
+/* Common mobile UI styles */
+html, body {
+  font-size: 16px;
+  overflow-x: hidden;
+}
+
+/* spacing between labels and inputs */
+label + .form-control,
+label + .form-select,
+label + .btn-group,
+label + textarea {
+  margin-top: 0.5rem;
+}
+
+/* hide cycle history initially */
+#cycle_history {
+  display: none;
+}
+
+@media (max-width: 767px) {
+  /* ensure touch target size */
+  input,
+  select,
+  textarea,
+  button,
+  .btn {
+    min-height: 44px;
+    font-size: 1rem;
+  }
+
+  /* buttons full width with spacing */
+  .btn {
+    width: 100%;
+    margin-bottom: 0.5rem;
+    padding: 0.75rem 1rem;
+  }
+
+  .btn-group {
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  /* larger circular radio/checkbox */
+  input[type="radio"],
+  input[type="checkbox"] {
+    width: 1.5rem;
+    height: 1.5rem;
+    border-radius: 50%;
+  }
+}
