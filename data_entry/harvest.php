@@ -7,6 +7,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bed_id'], $_POST['har
     mysqli_stmt_bind_param($stmt, 'isdiids', $_POST['cycle_id'], $_POST['harvest_date'], $_POST['harvest_kg'], $_POST['loss_type_id'], $_POST['user_id'], $_POST['harvest_ratio'], $_POST['note']);
     mysqli_stmt_execute($stmt);
     mysqli_stmt_close($stmt);
+    setcookie('user_id', $_POST['user_id'], time() + (60 * 60 * 24 * 14), '/');
+    $selected_user_id = $_POST['user_id'];
     echo "<div class='alert alert-success text-center m-3'>収穫データを登録しました。</div>";
 }
 ?>
