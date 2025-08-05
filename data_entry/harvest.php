@@ -12,9 +12,34 @@ if (!$selected_user_id && !empty($_SERVER['HTTP_COOKIE'])) {
 }
 
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bed_id'], $_POST['harvest_date'], $_POST['harvest_kg'], $_POST['loss_type_id'], $_POST['harvest_ratio'], $_POST['user_id'])) {
-    $stmt = mysqli_prepare($link, "INSERT INTO harvests (cycle_id, harvest_date, harvest_kg, loss_type_id, user_id, harvest_ratio, note) VALUES (?, ?, ?, ?, ?, ?, ?)");
-    mysqli_stmt_bind_param($stmt, 'isdiids', $_POST['cycle_id'], $_POST['harvest_date'], $_POST['harvest_kg'], $_POST['loss_type_id'], $_POST['user_id'], $_POST['harvest_ratio'], $_POST['note']);
+if (
+    $_SERVER['REQUEST_METHOD'] === 'POST' &&
+    isset(
+        $_POST['bed_id'],
+        $_POST['harvest_date'],
+        $_POST['harvest_kg'],
+        $_POST['loss_type_id'],
+        $_POST['harvest_ratio'],
+        $_POST['user_id'],
+        $_POST['size_eval']
+    )
+) {
+    $stmt = mysqli_prepare(
+        $link,
+        "INSERT INTO harvests (cycle_id, harvest_date, harvest_kg, loss_type_id, user_id, harvest_ratio, size_eval, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    );
+    mysqli_stmt_bind_param(
+        $stmt,
+        'isdiidss',
+        $_POST['cycle_id'],
+        $_POST['harvest_date'],
+        $_POST['harvest_kg'],
+        $_POST['loss_type_id'],
+        $_POST['user_id'],
+        $_POST['harvest_ratio'],
+        $_POST['size_eval'],
+        $_POST['note']
+    );
     mysqli_stmt_execute($stmt);
     mysqli_stmt_close($stmt);
     setcookie('gf_fc_useit_id', $_POST['user_id'], time() + (60 * 60 * 24 * 14), '/');
@@ -31,7 +56,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bed_id'], $_POST['har
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="../css/mobile-ui.css">
 </head>
-<body>
+<body class="pb-5">
 <div class="container py-4">
   <h4 class="mb-4 text-primary">🌱 収穫入力</h4>
   <form method="POST">
@@ -101,6 +126,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bed_id'], $_POST['har
       <input id="harvest_kg" type="number" step="0.1" class="form-control form-control-lg" name="harvest_kg" required>
     </div>
 
+    <!-- 状態 -->
+    <div class="mb-4">
+      <label class="form-label fs-5">状態</label><br>
+      <div class="btn-group w-100" role="group">
+        <input type="radio" class="btn-check" name="size_eval" id="s1" value="big" required>
+        <label class="btn btn-outline-secondary" for="s1">大きめ</label>
+        <input type="radio" class="btn-check" name="size_eval" id="s2" value="normal">
+        <label class="btn btn-outline-secondary" for="s2">適当</label>
+        <input type="radio" class="btn-check" name="size_eval" id="s3" value="small">
+        <label class="btn btn-outline-secondary" for="s3">小さめ</label>
+      </div>
+    </div>
+
     <!-- 廃棄・ゴミ区分 -->
     <div class="mb-4">
       <label for="loss_type_id" class="form-label fs-5">廃棄・ゴミ区分</label>
@@ -126,6 +164,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bed_id'], $_POST['har
     </div>
   </form>
 </div>
+
+<nav class="navbar fixed-bottom bg-light border-top">
+  <div class="container-fluid">
+    <div class="d-flex justify-content-around w-100">
+      <a href="../index.php" class="text-center nav-link"><div>🏠</div><small>ホーム</small></a>
+      <a href="../monitor.php" class="text-center nav-link"><div>🌱</div><small>栽培状況</small></a>
+      <a href="../inventory.php" class="text-center nav-link"><div>📊</div><small>在庫</small></a>
+      <a href="../plan.php" class="text-center nav-link"><div>📅</div><small>計画</small></a>
+      <a href="../settings.php" class="text-center nav-link"><div>⚙️</div><small>設定</small></a>
+    </div>
+  </div>
+</nav>
 
 <script>
 function saveUserCookie() {
