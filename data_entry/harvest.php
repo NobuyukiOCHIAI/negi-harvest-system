@@ -1,6 +1,16 @@
 <?php
 require_once '../db.php';
 $selected_user_id = $_COOKIE['gf_fc_useit_id'] ?? '';
+if (!$selected_user_id && !empty($_SERVER['HTTP_COOKIE'])) {
+    foreach (explode('; ', $_SERVER['HTTP_COOKIE']) as $cookie) {
+        [$name, $value] = explode('=', $cookie, 2);
+        if ($name === 'gf_fc_useit_id') {
+            $selected_user_id = $value;
+            break;
+        }
+    }
+}
+
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bed_id'], $_POST['harvest_date'], $_POST['harvest_kg'], $_POST['loss_type_id'], $_POST['harvest_ratio'], $_POST['user_id'])) {
     $stmt = mysqli_prepare($link, "INSERT INTO harvests (cycle_id, harvest_date, harvest_kg, loss_type_id, user_id, harvest_ratio, note) VALUES (?, ?, ?, ?, ?, ?, ?)");
@@ -131,6 +141,28 @@ function saveUserCookie() {
     console.log('gf_fc_useit_id not set, cookie not saved');
   }
 }
+
+function getCookie(name) {
+  const value = `; ${document.cookie}`;
+  const parts = value.split(`; ${name}=`);
+  if (parts.length === 2) {
+    return parts.pop().split(';').shift();
+  }
+  return '';
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const savedUserId = getCookie('gf_fc_useit_id');
+  if (savedUserId) {
+    const userSelect = document.getElementById('user_id');
+    if (userSelect) {
+      userSelect.value = savedUserId;
+    }
+    console.log('Loaded gf_fc_useit_id cookie:', savedUserId);
+  } else {
+    console.log('gf_fc_useit_id cookie not found on load');
+  }
+});
 
 document.getElementById('harvest_date').valueAsDate = new Date();
 
