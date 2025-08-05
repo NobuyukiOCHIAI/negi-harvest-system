@@ -8,7 +8,7 @@
 
 ## セットアップ手順
 1. `sql/schema.sql` と `sql/sample_data.sql` をインポート
-2. `db.php.sample` を `db.php` にリネームし、接続情報を設定
+2. `db.php` の接続情報を設定
 3. `/data_entry/harvest.php` にブラウザでアクセス
 
 ## ディレクトリ構成
@@ -16,7 +16,7 @@
 negi-harvest-system/
 ├── README.md
 ├── .gitignore
-├── db.php.sample
+├── db.php
 ├── sql/
 │   ├── schema.sql
 │   └── sample_data.sql
