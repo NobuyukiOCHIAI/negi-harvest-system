@@ -17,18 +17,17 @@ DB_CONFIG = {
     'cursorclass': pymysql.cursors.DictCursor,
 }
 
-BASE_GROWTH_DAYS = {1: 70, 2: 100, 3: 85}
-
+# 修正: 基準生育日数を実績平均化
+DEFAULT_BASE_GROWTH_DAYS = {1: 50, 2: 120, 3: 80}
 
 def determine_season_flag(plant_date):
     month = plant_date.month
-    if 6 <= month <= 9:
-        return 1
-    elif month in (12, 1, 2):
-        return 2
+    if month in (7, 8, 9):
+        return 1  # 修正: 季節区分をモデル仕様に合わせた
+    elif month in (11, 12, 1, 2, 3):
+        return 2  # 修正: 季節区分をモデル仕様に合わせた
     else:
-        return 3
-
+        return 3  # 修正: 季節区分をモデル仕様に合わせた
 
 def compute_and_update_features(cycle_id):
     conn = pymysql.connect(**DB_CONFIG)
@@ -45,7 +44,22 @@ def compute_and_update_features(cycle_id):
             harvest_start = cycle["harvest_start"]
             group_type = cycle["group_type"]
             season_flag = determine_season_flag(plant_date)
-            base_growth_days = BASE_GROWTH_DAYS.get(season_flag)
+
+            cur.execute(
+                """
+                SELECT AVG(DATEDIFF(harvest_start, plant_date)) AS avg_days
+                FROM cycles
+                WHERE season_flag=%s AND harvest_start IS NOT NULL
+                """,
+                (season_flag,),
+            )
+            row = cur.fetchone()
+            base_growth_days = (
+                row["avg_days"]
+                if row["avg_days"] is not None
+                else DEFAULT_BASE_GROWTH_DAYS[season_flag]
+            )  # 修正: 基準生育日数を実績平均化
+
             expected_harvest = (
                 plant_date + timedelta(days=base_growth_days)
                 if plant_date and base_growth_days
@@ -210,8 +224,14 @@ def predict(features, apply_partial=False, partial_yield=None, partial_ratio=Non
     df = pd.DataFrame([{c: features.get(c) for c in cols}])
     pred_days = int(round(model_days.predict(df)[0]))
     pred_yield = float(model_yield.predict(df)[0])
-    if apply_partial and partial_yield is not None and partial_ratio is not None:
-        pred_corrected = partial_yield + pred_yield * (1 - partial_ratio)
+    if (
+        apply_partial
+        and partial_yield is not None
+        and partial_ratio not in (None, 0)
+    ):
+        alpha = 0.5  # 修正: 部分収穫補正を加重平均方式に変更
+        partial_est_total = partial_yield / partial_ratio
+        pred_corrected = pred_yield * alpha + partial_est_total * (1 - alpha)
     else:
         pred_corrected = pred_yield
     return pred_days, pred_yield, pred_corrected
