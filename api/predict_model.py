@@ -20,7 +20,6 @@ DB_CONFIG = {
 # 修正: 基準生育日数を実績平均化
 DEFAULT_BASE_GROWTH_DAYS = {1: 50, 2: 120, 3: 80}
 
-
 def determine_season_flag(plant_date):
     month = plant_date.month
     if month in (7, 8, 9):
@@ -29,7 +28,6 @@ def determine_season_flag(plant_date):
         return 2  # 修正: 季節区分をモデル仕様に合わせた
     else:
         return 3  # 修正: 季節区分をモデル仕様に合わせた
-
 
 def compute_and_update_features(cycle_id):
     conn = pymysql.connect(**DB_CONFIG)
@@ -46,6 +44,7 @@ def compute_and_update_features(cycle_id):
             harvest_start = cycle["harvest_start"]
             group_type = cycle["group_type"]
             season_flag = determine_season_flag(plant_date)
+
             cur.execute(
                 """
                 SELECT AVG(DATEDIFF(harvest_start, plant_date)) AS avg_days
@@ -60,6 +59,7 @@ def compute_and_update_features(cycle_id):
                 if row["avg_days"] is not None
                 else DEFAULT_BASE_GROWTH_DAYS[season_flag]
             )  # 修正: 基準生育日数を実績平均化
+
             expected_harvest = (
                 plant_date + timedelta(days=base_growth_days)
                 if plant_date and base_growth_days
