@@ -1,0 +1,17 @@
+ALTER TABLE cycles
+ADD COLUMN base_growth_days INT NULL COMMENT '基準生育日数（季節別）',
+ADD COLUMN expected_harvest DATE NULL COMMENT '予定収穫日',
+ADD COLUMN sales_adjust_days INT NULL COMMENT '営業調整日数（実-予定）',
+ADD COLUMN similar_bed_avg_yield DECIMAL(8,2) NULL COMMENT '類似ベッド平均収量',
+ADD COLUMN similar_bed_avg_days DECIMAL(8,2) NULL COMMENT '類似ベッド平均日数',
+ADD COLUMN prev_year_yield DECIMAL(8,2) NULL COMMENT '前年同時期収量',
+ADD COLUMN prev_year_days DECIMAL(8,2) NULL COMMENT '前年同時期日数',
+ADD COLUMN yield_diff_prev DECIMAL(8,2) NULL COMMENT '収量差_前年',
+ADD COLUMN days_diff_prev DECIMAL(8,2) NULL COMMENT '日数差_前年',
+ADD COLUMN temp_avg DECIMAL(5,2) NULL COMMENT '平均気温',
+ADD COLUMN temp_max DECIMAL(5,2) NULL COMMENT '最高気温',
+ADD COLUMN temp_min DECIMAL(5,2) NULL COMMENT '最低気温',
+ADD COLUMN temp_std DECIMAL(5,2) NULL COMMENT '気温標準偏差',
+ADD COLUMN temp_range_avg DECIMAL(5,2) NULL COMMENT '平均日較差',
+ADD COLUMN temp_range_std DECIMAL(5,2) NULL COMMENT '日較差標準偏差',
+ADD COLUMN season_flag TINYINT NULL COMMENT '季節フラグ（1=夏, 2=冬, 3=中間期）';
