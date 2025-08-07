@@ -51,3 +51,11 @@ CREATE TABLE users (
   id INT AUTO_INCREMENT PRIMARY KEY,
   name VARCHAR(50) NOT NULL
 );
+
+CREATE TABLE weather_daily (
+  date DATE PRIMARY KEY,
+  avg_temp FLOAT,
+  max_temp FLOAT,
+  min_temp FLOAT,
+  variation FLOAT
+);
