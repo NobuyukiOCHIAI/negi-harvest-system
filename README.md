@@ -7,7 +7,8 @@
 - MySQL 5.7+ または MariaDB 10+
 
 ## セットアップ手順
-1. `sql/schema.sql` と `sql/sample_data.sql` をインポート
+1. `sql/schema.sql`、`sql/create_weather_daily.sql`、`sql/insert_weather_daily.sql`、`sql/sample_data.sql` をインポート  
+   - `insert_weather_daily.sql` はリポジトリ内の `ondo.xlsx` から気温データを登録します
 2. `db.php` の接続情報を設定
 3. `/data_entry/harvest.php` にブラウザでアクセス
 
@@ -19,6 +20,8 @@ negi-harvest-system/
 ├── db.php
 ├── sql/
 │   ├── schema.sql
+│   ├── create_weather_daily.sql
+│   ├── insert_weather_daily.sql
 │   └── sample_data.sql
 └── data_entry/
     ├── harvest.php
