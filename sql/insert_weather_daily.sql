@@ -1,4 +1,4 @@
-INSERT INTO weather_daily (date, avg_temp, max_temp, min_temp, variation) VALUES
+INSERT INTO weather_daily (date, temp_avg, temp_max, temp_min, variation) VALUES
 ('2023-11-07', 19.8246623563218, 22.5125, 16.525, 5.9875),
 ('2023-11-08', 16.0805208333333, 21.2, 10.7, 10.5),
 ('2023-11-09', 15.8807291666666, 20.4874999999999, 11.04375, 9.44374999999999),
