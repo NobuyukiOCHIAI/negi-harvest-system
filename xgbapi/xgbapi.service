@@ -1,0 +1,16 @@
+[Unit]
+Description=XGBoost Predict API (FastAPI/Uvicorn)
+After=network.target
+
+[Service]
+User=centos
+Group=centos
+WorkingDirectory=/xgbapi
+Environment=PYTHONPATH=/xgbapi
+EnvironmentFile=/xgbapi/config/.env
+ExecStart=/xgbapi/.venv/bin/uvicorn app.main:app --host ${API_HOST} --port ${API_PORT}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
