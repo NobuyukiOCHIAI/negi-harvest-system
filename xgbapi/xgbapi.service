@@ -5,6 +5,7 @@ After=network.target
 [Service]
 User=centos
 Group=centos
+fayenp-codex/generate-fastapi-xgboost-api-on-centos-stream-9
 WorkingDirectory=%h/xgbapi
 Environment=PYTHONPATH=%h/xgbapi
 EnvironmentFile=%h/xgbapi/config/.env
