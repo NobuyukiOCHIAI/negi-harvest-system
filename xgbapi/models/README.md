@@ -1,6 +1,7 @@
 モデルは以下の構成で配置します:
 
-/xgbapi/models/<MODEL_NAME>/<MODEL_VERSION>/
+fayenp-codex/generate-fastapi-xgboost-api-on-centos-stream-9
+~/xgbapi/models/<MODEL_NAME>/<MODEL_VERSION>/
   ├── model_yield.pkl     # 収量予測
   ├── model_days.pkl      # 生育日数予測
   ├── preproc.pkl         # 学習時の前処理パイプライン

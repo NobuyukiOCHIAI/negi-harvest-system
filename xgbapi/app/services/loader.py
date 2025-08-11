@@ -14,10 +14,12 @@ class ModelBundle:
 
 def load_models() -> ModelBundle:
     name = os.getenv("MODEL_NAME", "yield_days_xgb")
-    ver  = os.getenv("MODEL_VERSION", "2025-08-10_001")
-    base = os.getenv("MODEL_BASE", "/xgbapi/models")
-    model_dir = Path(base) / name / ver
-
+    ver  = os.getenv("MODEL_VERSION", "2025-08-10_001")   
+    fayenp-codex/generate-fastapi-xgboost-api-on-centos-stream-9
+    base_env = os.getenv("MODEL_BASE")
+    default_base = Path(__file__).resolve().parents[2] / "models"
+    base = Path(base_env).expanduser() if base_env else default_base
+    model_dir = base / name / ver
     mb = ModelBundle(ok=False)
     mb.model_path = str(model_dir)
 

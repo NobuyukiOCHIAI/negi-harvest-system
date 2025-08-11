@@ -5,10 +5,11 @@ After=network.target
 [Service]
 User=centos
 Group=centos
-WorkingDirectory=/xgbapi
-Environment=PYTHONPATH=/xgbapi
-EnvironmentFile=/xgbapi/config/.env
-ExecStart=/xgbapi/.venv/bin/uvicorn app.main:app --host ${API_HOST} --port ${API_PORT}
+fayenp-codex/generate-fastapi-xgboost-api-on-centos-stream-9
+WorkingDirectory=%h/xgbapi
+Environment=PYTHONPATH=%h/xgbapi
+EnvironmentFile=%h/xgbapi/config/.env
+ExecStart=%h/xgbapi/.venv/bin/uvicorn app.main:app --host ${API_HOST} --port ${API_PORT}
 Restart=always
 RestartSec=5
 
