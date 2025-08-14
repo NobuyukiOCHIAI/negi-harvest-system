@@ -35,7 +35,6 @@ Optional / 任意:
 ```
 {"ok": true, "feature_order": [...], "feature_order_size": <int>}
 ```
-
 ## Health Check / ヘルスチェック
 Use `/healthz` for L7 health probes. For detailed monitoring (model paths, feature count) use `/api/health`.  
 `/healthz` は L7 ヘルスチェックに使用します。モデルパスや特徴量数など詳細な監視には `/api/health` を利用してください。
