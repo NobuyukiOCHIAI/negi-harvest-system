@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+
+# Secrets / local env
+config/.env
+
+# Models & artifacts
+models/
+*.pkl
+*.log
+
+# OS/IDE
+.DS_Store
+.vscode/
+.idea/

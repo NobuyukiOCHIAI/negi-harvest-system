@@ -1,0 +1,45 @@
+from app.services.feature_shim import adapt_features
+from fastapi import APIRouter, Depends, HTTPException
+from datetime import timedelta
+import os
+from ..schemas.predict import PredictRequest, PredictResponse
+from ..services import pipeline
+from ..services.loader import load_models
+from ..services.predictor import predict
+from ..utils.security import api_key_guard
+
+router = APIRouter(dependencies=[Depends(api_key_guard)])
+_mb_cache = None
+
+def _mb():
+    global _mb_cache
+    if _mb_cache is None:
+        _mb_cache = load_models()
+    return _mb_cache
+
+@router.post("/predict", response_model=PredictResponse)
+def post_predict(req: PredictRequest):
+    mb = _mb()
+    if not mb.get("ok", False):
+        raise HTTPException(status_code=503, detail=f"Model not ready: {mb.reason}")
+
+    feats = pipeline.build_features(req.model_dump())
+    feats = adapt_features(feats, mb["preproc"], payload)
+    y_kg, y_days = predict(mb, feats)
+
+    trans_date = req.transplant_date
+    first_date = None
+    if trans_date and y_days is not None:
+        dt = pipeline.to_jst(trans_date)
+        if dt:
+            first_date = (dt.date() + timedelta(days=int(y_days))).isoformat()
+
+    return {
+        "bed_id": req.bed_id,
+        "predicted_yield_kg": float(y_kg),
+        "predicted_days": int(y_days),
+        "predicted_first_harvest_date": first_date,
+        "confidence": {"yield_mae_est": 14.3, "days_mae_est": 5.7},
+        "model_version": os.getenv("MODEL_VERSION", "2025-08-10_001"),
+        "features_debug": feats.iloc[0].to_dict()
+    }
