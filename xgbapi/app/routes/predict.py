@@ -5,14 +5,12 @@
 #          - optional preprocessing (DataFrame-based)
 #          - backward-compatible single-model /predict
 #          - new dual-model /predict_both (days + yield)
-#          - both /api/... and legacy ... routes exposed
 # ─────────────────────────────────────────────────────────────
 
 from __future__ import annotations
 
 import os
 import json
-import glob
 import logging
 import traceback
 from datetime import datetime
@@ -20,7 +18,16 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Union
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field
+
+from app.schemas_predict import (
+    PredictItem,
+    PredictRequest,
+    PredictResponse,
+    PredictBothRequest,
+    PredictBothResponse,
+    PredictBothItem,
+)
+from app.services import feature_shim
 
 # Required
 try:
@@ -44,15 +51,10 @@ router = APIRouter()
 log = logging.getLogger("xgbapi.predict")
 
 # ── Environment ──────────────────────────────────────────────
-# 新構成（推奨）
 MODEL_PATH_DAYS = os.getenv("MODEL_PATH_DAYS")     # e.g. /.../model_days.pkl
 MODEL_PATH_YIELD = os.getenv("MODEL_PATH_YIELD")   # e.g. /.../model_yield.pkl
 PREPROC_PATH = os.getenv("PREPROC_PATH")           # e.g. /.../preproc.pkl
 FEATURE_META_PATH = os.getenv("FEATURE_META_PATH") # e.g. /.../feature_meta.json
-
-# 旧構成（単一モデルの自動解決を継承）
-MODEL_DIR = os.getenv("MODEL_DIR", "./models")
-MODEL_NAME = os.getenv("MODEL_NAME", "")
 
 # ── Artifacts cache ─────────────────────────────────────────
 _ARTIFACTS: Optional[SimpleNamespace] = None
@@ -74,8 +76,6 @@ def _signature() -> str:
         f"YIELD:{MODEL_PATH_YIELD or '-'}:{_mtime(MODEL_PATH_YIELD)}",
         f"PREP:{PREPROC_PATH or '-'}:{_mtime(PREPROC_PATH)}",
         f"META:{FEATURE_META_PATH or '-'}:{_mtime(FEATURE_META_PATH)}",
-        f"MDIR:{MODEL_DIR}:{_mtime(MODEL_DIR)}",
-        f"MNAME:{MODEL_NAME}",
     ]
     return "|".join(parts)
 
@@ -111,23 +111,6 @@ def _load_feature_order_from_meta() -> Optional[List[str]]:
     return None
 
 
-def _infer_feature_order_from_preproc(preproc) -> Optional[List[str]]:
-    if preproc is None:
-        return None
-    # sklearn transformers: feature_names_in_ / get_feature_names_out()
-    arr = _safe_list(getattr(preproc, "feature_names_in_", None))
-    if arr and all(isinstance(s, str) for s in arr):
-        return arr
-    if hasattr(preproc, "get_feature_names_out"):
-        try:
-            arr = _safe_list(preproc.get_feature_names_out())
-            if arr and all(isinstance(s, str) for s in arr):
-                return arr
-        except Exception:
-            pass
-    return None
-
-
 def _infer_feature_order_from_model(model) -> Optional[List[str]]:
     if model is None:
         return None
@@ -147,21 +130,6 @@ def _infer_feature_order_from_model(model) -> Optional[List[str]]:
     return None
 
 
-def _resolve_single_model_path_fallback() -> str:
-    # 旧互換：MODEL_DIR / MODEL_NAME から最新 .pkl を推定
-    if MODEL_NAME:
-        path = os.path.join(MODEL_DIR, MODEL_NAME)
-        if os.path.isfile(path):
-            return path
-        candidate = os.path.join(MODEL_DIR, MODEL_NAME, "model.pkl")
-        if os.path.isfile(candidate):
-            return candidate
-    candidates = glob.glob(os.path.join(MODEL_DIR, "**", "*.pkl"), recursive=True)
-    if not candidates:
-        raise FileNotFoundError(f"No .pkl model found under MODEL_DIR={MODEL_DIR}")
-    return max(candidates, key=os.path.getmtime)
-
-
 # ── Artifacts loader ────────────────────────────────────────
 def get_model_and_artifacts() -> SimpleNamespace:
     """Load/Cache: model_days, model_yield, preproc, feature_order, model paths."""
@@ -171,35 +139,19 @@ def get_model_and_artifacts() -> SimpleNamespace:
     if _ARTIFACTS is not None and sig == _SIG:
         return _ARTIFACTS
 
-    model_days = None
-    model_yield = None
+    if not MODEL_PATH_DAYS or not MODEL_PATH_YIELD:
+        raise RuntimeError("MODEL_PATH_DAYS and MODEL_PATH_YIELD must be set")
+
     model_path_days = MODEL_PATH_DAYS
     model_path_yield = MODEL_PATH_YIELD
+
+    model_days = joblib.load(model_path_days)
+    log.info("[MODEL:days] loaded from %s", model_path_days)
+
+    model_yield = joblib.load(model_path_yield)
+    log.info("[MODEL:yield] loaded from %s", model_path_yield)
+
     preproc = None
-
-    # モデル（days）
-    if model_path_days:
-        model_days = joblib.load(model_path_days)
-        log.info("[MODEL:days] loaded from %s", model_path_days)
-    else:
-        # 旧互換：単一モデルとして days に割当て
-        try:
-            fallback = _resolve_single_model_path_fallback()
-            model_days = joblib.load(fallback)
-            model_path_days = fallback
-            log.info("[MODEL:days] fallback loaded from %s", fallback)
-        except Exception as e:
-            log.warning("days model not set and fallback failed: %s", e)
-
-    # モデル（yield）
-    if model_path_yield:
-        try:
-            model_yield = joblib.load(model_path_yield)
-            log.info("[MODEL:yield] loaded from %s", model_path_yield)
-        except Exception as e:
-            log.warning("[MODEL:yield] failed to load: %s", e)
-
-    # 前処理
     if PREPROC_PATH and os.path.isfile(PREPROC_PATH):
         try:
             preproc = joblib.load(PREPROC_PATH)
@@ -210,7 +162,7 @@ def get_model_and_artifacts() -> SimpleNamespace:
     # 列順の決定：meta → preproc → days → yield
     order = (
         _load_feature_order_from_meta()
-        or _infer_feature_order_from_preproc(preproc)
+        or feature_shim._expected_columns_from_preproc(preproc)
         or _infer_feature_order_from_model(model_days)
         or _infer_feature_order_from_model(model_yield)
     )
@@ -232,40 +184,6 @@ def get_model_and_artifacts() -> SimpleNamespace:
     )
     _SIG = sig
     return _ARTIFACTS
-
-
-# ── Schemas ────────────────────────────────────────────────
-class PredictItem(BaseModel):
-    features: Union[Dict[str, Any], List[float]] = Field(..., description="Feature map or array")
-
-
-class PredictRequest(BaseModel):
-    data: List[PredictItem] = Field(..., description="Batch of records")
-
-
-class PredictResponse(BaseModel):
-    # Pydantic v2: avoid protected namespace warning
-    model_config = {"protected_namespaces": ()}
-    ok: bool
-    model_path: Optional[str] = None
-    request_id: Optional[str] = None
-    predictions: List[float]
-
-
-class PredictBothItem(BaseModel):
-    # "yield" は予約語なので alias を使用
-    model_config = {"populate_by_name": True}
-    days: float
-    yield_: float = Field(alias="yield")
-
-
-class PredictBothResponse(BaseModel):
-    model_config = {"protected_namespaces": ()}
-    ok: bool
-    model_path_days: Optional[str] = None
-    model_path_yield: Optional[str] = None
-    request_id: Optional[str] = None
-    predictions: List[PredictBothItem]
 
 
 # ── Helpers ────────────────────────────────────────────────
@@ -339,10 +257,8 @@ def _health_payload(request: Request) -> Dict[str, Any]:
     try:
         art = get_model_and_artifacts()
         size = len(art.feature_order) if art.feature_order else None
-        # 後方互換で model_path は days を代表に返す
         return {
-            "ok": bool(art.model_days is not None),
-            "model_path": art.model_path_days,
+            "ok": bool(art.model_days is not None and art.model_yield is not None),
             "model_path_days": art.model_path_days,
             "model_path_yield": art.model_path_yield,
             "request_id": rid,
@@ -350,23 +266,21 @@ def _health_payload(request: Request) -> Dict[str, Any]:
         }
     except Exception:
         log.exception("health check failed (rid=%s)", rid)
-        return {"ok": False, "error": "model_load_failed", "request_id": rid}
+        return {"ok": False, "error": {"code": 100, "message": "model_load_failed"}, "request_id": rid}
 
 
-@router.get("/api/feature_meta")
 @router.get("/feature_meta")
 async def feature_meta():
     art = get_model_and_artifacts()
-    return {"ok": True, "feature_order": art.feature_order}
+    size = len(art.feature_order) if art.feature_order else 0
+    return {"ok": True, "feature_order": art.feature_order, "feature_order_size": size}
 
 
-@router.get("/api/health")
 @router.get("/health")
 async def health(request: Request):
     return _health_payload(request)
 
 
-@router.post("/api/predict", response_model=PredictResponse)
 @router.post("/predict", response_model=PredictResponse)
 async def predict(req: PredictRequest, request: Request):
     """
@@ -381,49 +295,34 @@ async def predict(req: PredictRequest, request: Request):
             raise RuntimeError("MODEL_PATH_DAYS is not set or days model failed to load.")
     except Exception as e:
         log.exception("Model load error (rid=%s)", rid)
-        raise HTTPException(status_code=500, detail={
-            "ok": False,
-            "error": "model_load_failed",
-            "message": str(e),
-            "request_id": rid,
-        })
+        raise HTTPException(status_code=500, detail={"code": 100, "message": str(e)})
 
     try:
         X = _records_to_matrix(req.data, art.feature_order)
-        Xt = _apply_preproc(X, art.feature_order, art.preproc)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail={"code": 200, "message": str(e)})
 
+    try:
+        Xt = _apply_preproc(X, art.feature_order, art.preproc)
         preds = art.model_days.predict(Xt)
         try:
             predictions = [float(x) for x in preds]
         except Exception:
             predictions = [float(x) for x in list(preds)]
-
         return {
             "ok": True,
             "model_path": art.model_path_days,
             "request_id": rid,
             "predictions": predictions,
         }
-
     except Exception as e:
         tb = traceback.format_exc()
         log.error("Prediction failed (rid=%s): %s\n%s", rid, e, tb)
-        raise HTTPException(status_code=500, detail={
-            "ok": False,
-            "error": "prediction_failed",
-            "message": str(e),
-            "request_id": rid,
-        })
+        raise HTTPException(status_code=500, detail={"code": 100, "message": str(e)})
 
 
-# 両モデル同時推論
-class _PredictBothRespModel(PredictBothResponse):
-    pass
-
-
-@router.post("/api/predict_both", response_model=_PredictBothRespModel)
-@router.post("/predict_both", response_model=_PredictBothRespModel)
-async def predict_both(req: PredictRequest, request: Request):
+@router.post("/predict_both", response_model=PredictBothResponse)
+async def predict_both(req: PredictBothRequest, request: Request):
     """
     同一の特徴量から 日数(days) と 収量(yield) を同時に推論
     """
@@ -438,15 +337,14 @@ async def predict_both(req: PredictRequest, request: Request):
             raise RuntimeError("MODEL_PATH_YIELD is not set or yield model failed to load.")
     except Exception as e:
         log.exception("Model load error (rid=%s)", rid)
-        raise HTTPException(status_code=500, detail={
-            "ok": False,
-            "error": "model_load_failed",
-            "message": str(e),
-            "request_id": rid,
-        })
+        raise HTTPException(status_code=500, detail={"code": 100, "message": str(e)})
 
     try:
         X = _records_to_matrix(req.data, art.feature_order)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail={"code": 200, "message": str(e)})
+
+    try:
         Xt = _apply_preproc(X, art.feature_order, art.preproc)
 
         y_days = art.model_days.predict(Xt)
@@ -456,20 +354,14 @@ async def predict_both(req: PredictRequest, request: Request):
         for d, y in zip(y_days, y_yield):
             items.append(PredictBothItem(days=float(d), yield_=float(y)))
 
-        return _PredictBothRespModel(
+        return PredictBothResponse(
             ok=True,
             model_path_days=art.model_path_days,
             model_path_yield=art.model_path_yield,
             request_id=rid,
             predictions=items,
         )
-
     except Exception as e:
         tb = traceback.format_exc()
         log.error("PredictBoth failed (rid=%s): %s\n%s", rid, e, tb)
-        raise HTTPException(status_code=500, detail={
-            "ok": False,
-            "error": "prediction_failed",
-            "message": str(e),
-            "request_id": rid,
-        })
+        raise HTTPException(status_code=500, detail={"code": 100, "message": str(e)})

@@ -15,5 +15,9 @@
   "root": {
     "level": "INFO",
     "handlers": ["console"]
+  },
+  "loggers": {
+    "uvicorn.access": {"handlers": ["console"], "level": "INFO", "propagate": false},
+    "uvicorn.error": {"handlers": ["console"], "level": "INFO", "propagate": false}
   }
 }
