@@ -19,14 +19,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from fastapi import APIRouter, HTTPException, Request
 
-from app.schemas_predict import (
-    PredictItem,
-    PredictRequest,
-    PredictResponse,
-    PredictBothRequest,
-    PredictBothResponse,
-    PredictBothItem,
-)
+from app import schemas_predict as schemas
 from app.services import feature_shim
 
 # Required
@@ -202,7 +195,7 @@ def _ensure_rid(request: Request) -> str:
     return rid
 
 
-def _records_to_matrix(items: List[PredictItem], feature_order: Optional[List[str]]) -> List[List[float]]:
+def _records_to_matrix(items: List[schemas.PredictItem], feature_order: Optional[List[str]]) -> List[List[float]]:
     """
     - dict 入力: feature_order に合わせて整列。欠損は 0.0 補完（必要なら np.nan に変更可）
     - list 入力: 長さチェックのみ（feature_order 未知でも受け入れる）
@@ -281,8 +274,8 @@ async def health(request: Request):
     return _health_payload(request)
 
 
-@router.post("/predict", response_model=PredictResponse)
-async def predict(req: PredictRequest, request: Request):
+@router.post("/predict", response_model=schemas.PredictResponse)
+async def predict(req: schemas.PredictRequest, request: Request):
     """
     従来互換：単一モデル（days）で推論
     """
@@ -321,8 +314,8 @@ async def predict(req: PredictRequest, request: Request):
         raise HTTPException(status_code=500, detail={"code": 100, "message": str(e)})
 
 
-@router.post("/predict_both", response_model=PredictBothResponse)
-async def predict_both(req: PredictBothRequest, request: Request):
+@router.post("/predict_both", response_model=schemas.PredictBothResponse)
+async def predict_both(req: schemas.PredictBothRequest, request: Request):
     """
     同一の特徴量から 日数(days) と 収量(yield) を同時に推論
     """
@@ -350,11 +343,11 @@ async def predict_both(req: PredictBothRequest, request: Request):
         y_days = art.model_days.predict(Xt)
         y_yield = art.model_yield.predict(Xt)
 
-        items: List[PredictBothItem] = []
+        items: List[schemas.PredictBothItem] = []
         for d, y in zip(y_days, y_yield):
-            items.append(PredictBothItem(days=float(d), yield_=float(y)))
+            items.append(schemas.PredictBothItem(days=float(d), yield_=float(y)))
 
-        return PredictBothResponse(
+        return schemas.PredictBothResponse(
             ok=True,
             model_path_days=art.model_path_days,
             model_path_yield=art.model_path_yield,
