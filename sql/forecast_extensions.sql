@@ -1,4 +1,5 @@
 -- Additional tables and views for harvest forecasting
+-- Compatible with MySQL 5.5 (no native JSON or CHECK constraints)
 
 CREATE TABLE IF NOT EXISTS calendar_shipments (
   id INT AUTO_INCREMENT PRIMARY KEY,
@@ -37,7 +38,8 @@ CREATE TABLE IF NOT EXISTS features_cache (
   id INT AUTO_INCREMENT PRIMARY KEY,
   cycle_id INT NOT NULL,
   asof DATE NOT NULL,
-  features_json JSON NOT NULL,
+  -- MySQL 5.5 lacks a native JSON type; store encoded JSON in TEXT
+  features_json TEXT NOT NULL,
   hash CHAR(64) NOT NULL UNIQUE,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   INDEX (cycle_id, asof),
@@ -48,7 +50,7 @@ CREATE TABLE IF NOT EXISTS alerts (
   id INT AUTO_INCREMENT PRIMARY KEY,
   date DATE NOT NULL,
   type ENUM('shortage','delay','loss_spike','data_missing') NOT NULL,
-  payload_json JSON,
+  payload_json TEXT,
   status ENUM('open','closed') NOT NULL DEFAULT 'open',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   INDEX (type, date)
