@@ -50,7 +50,6 @@ CREATE TABLE IF NOT EXISTS alerts (
   id INT AUTO_INCREMENT PRIMARY KEY,
   date DATE NOT NULL,
   type ENUM('shortage','delay','loss_spike','data_missing') NOT NULL,
-  -- payload_json is stored as TEXT and validated by the application
   payload_json TEXT,
   status ENUM('open','closed') NOT NULL DEFAULT 'open',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
