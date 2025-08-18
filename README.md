@@ -14,6 +14,10 @@
 3. `db.php` の接続情報を設定
 4. `/data_entry/harvest.php` にブラウザでアクセス
 
+## 制約事項
+
+- データベースアクセスには MySQLi を使用し、PDO は使用しないでください。
+
 ## ディレクトリ構成
 ```
 negi-harvest-system/

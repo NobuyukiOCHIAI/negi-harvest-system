@@ -281,8 +281,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         mysqli_stmt_close($stmt);
 
         mysqli_commit($link);
-
-      　header('Location: /forecast/cycle.php?id=' . $cycleId . '&msg=predicted');
+        header('Location: /forecast/cycle.php?id=' . $cycleId . '&msg=predicted');
         exit;
 
     } catch (Throwable $e) {
@@ -315,10 +314,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       <select id="bed" name="bed_id" class="form-select form-select-lg" required>
         <option value="">選択してください</option>
         <?php
-        $stmt = $pdo->query("SELECT id, name FROM beds WHERE active=1 ORDER BY name");
-        while ($b = $stmt->fetch()) {
+        $result = mysqli_query($link, "SELECT id, name FROM beds WHERE active=1 ORDER BY name");
+        while ($b = mysqli_fetch_assoc($result)) {
             echo "<option value='{$b['id']}'>{$b['name']}</option>";
         }
+        mysqli_free_result($result);
         ?>
       </select>
     </div>
