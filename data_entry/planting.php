@@ -1,5 +1,7 @@
 <?php
 require_once '../db.php';
+require_once '../api/json_utils.php';
+require_once '../api/logging.php';
 mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
 
 function getEnvOrDefault($key, $default = null) {
@@ -203,7 +205,7 @@ function buildFeaturesForPlanting(mysqli $link, int $cycleId): ?array {
         '営業調整日数' => 0
     ];
 
-    $featuresJson = json_encode($features, JSON_UNESCAPED_UNICODE);
+    $featuresJson = encode_json($features);
     $hash = hash('sha256', $featuresJson);
     $stmt = mysqli_prepare($link, "INSERT INTO features_cache (cycle_id, asof, features_json, hash) VALUES (?, ?, ?, ?)");
     mysqli_stmt_bind_param($stmt, 'isss', $cycleId, $asof, $featuresJson, $hash);
@@ -221,7 +223,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $sow   = $_POST['sow_date'] ?? null;
         $plant = $_POST['plant_date'];
 
-        $stmt = mysqli_prepare($link, "INSERT INTO cycles (bed_id, sow_date, plant_date, status) VALUES (?, ?, ?, 'planted')");
+        $stmt = mysqli_prepare($link, "INSERT INTO cycles (bed_id, sow_date, plant_date) VALUES (?, ?, ?)");
         mysqli_stmt_bind_param($stmt, 'iss', $bedId, $sow, $plant);
         mysqli_stmt_execute($stmt);
         mysqli_stmt_close($stmt);
@@ -229,8 +231,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $features = buildFeaturesForPlanting($link, $cycleId);
         if ($features === null) {
-            $stmt = mysqli_prepare($link, "INSERT INTO alerts (date, type, payload_json, status) VALUES (CURDATE(),'data_missing', JSON_OBJECT('cycle_id', ?), 'open')");
-            mysqli_stmt_bind_param($stmt, 'i', $cycleId);
+            $payload = encode_json(['cycle_id' => $cycleId]);
+            $stmt = mysqli_prepare($link, "INSERT INTO alerts (date, type, payload_json, status) VALUES (CURDATE(),'data_missing', ?, 'open')");
+            mysqli_stmt_bind_param($stmt, 's', $payload);
             mysqli_stmt_execute($stmt);
             mysqli_stmt_close($stmt);
             mysqli_commit($link);
@@ -288,7 +291,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     } catch (Throwable $e) {
         mysqli_rollback($link);
-        error_log('[planting] failed: ' . $e->getMessage());
+        log_error('[planting] failed: ' . $e->getMessage());
         header('Location: planting.php?error=1');
         exit;
     }
