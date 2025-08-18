@@ -20,6 +20,28 @@
 - データベースアクセスには MySQLi を使用し、PDO は使用しないでください。
 - 重要なエラーは `api/logging.php` の `log_error` を使用して `/home/love-media/forc_logs` に記録してください。
 
+## 予測フロー
+
+- 温度は実測のみで将来値は使用しません。
+  - `asof = MIN(今日, weather_daily.MAX(date))`
+  - `asof >= plant_date` のときは `[plant_date, asof]`
+  - `asof < plant_date` のときは `[asof-6, asof]` の直近7日で集計
+- 近傍参照は収穫完了日基準で `[今日-5, 今日]` → `[今日-10, 今日]` → `[今日-14, 今日]` と拡大し、同一グループ優先で K=1。
+  - 見つからなければ全体平均
+- YOY は前年±5日のデータを同一ベッド＞同一グループ＞全体の順で検索。
+- 期待収穫日は DB に保存せず、`expected = plant_date + ROUND(pred_days)` を都度算出します。
+
+## 障害時の動作
+
+- `weather_daily` が空、または asof が取得不能の場合は予測を停止し `alerts(data_missing)` を記録します。
+- 近傍が見つからない場合は全体平均で埋めて推論を継続します。
+- API 呼び出しが失敗した場合は直近の `predictions` をフォールバックとして UI に「前回値」を表示します。
+
+## 運用ログ
+
+- エラーは `api/logging.php` の `log_error` を使用して出力します。
+- ログにはステージ名（`$__stage`）を含め、落ち所を迅速に特定できるようにします。
+
 ## ディレクトリ構成
 ```
 negi-harvest-system/
