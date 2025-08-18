@@ -1,23 +1,22 @@
 <?php
-// Database connection using PDO
-$dsn = 'mysql:host=localhost;dbname=database_name;charset=utf8mb4';
-$pdo = new PDO($dsn, 'username', 'password', [
-    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-]);
+require_once '../db.php';
+mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
 
 function getEnvOrDefault($key, $default = null) {
     $v = getenv($key);
     return ($v !== false && $v !== '') ? $v : $default;
 }
 
-function getAsof(PDO $pdo): ?string {
-    $stmt = $pdo->query("SELECT LEAST(CURDATE(), MAX(date)) AS asof FROM weather_daily");
-    $asof = $stmt->fetchColumn();
-    return $asof ?: null;
+function getAsof(mysqli $link): ?string {
+    $res = mysqli_query($link, "SELECT LEAST(CURDATE(), MAX(date)) AS asof FROM weather_daily");
+    if ($res) {
+        $row = mysqli_fetch_assoc($res);
+        return $row['asof'] ?? null;
+    }
+    return null;
 }
 
-function aggregateTemperature(PDO $pdo, string $plantDate, string $asof): array {
+function aggregateTemperature(mysqli $link, string $plantDate, string $asof): array {
     if ($asof >= $plantDate) {
         $d1 = $plantDate;
         $d2 = $asof;
@@ -33,14 +32,17 @@ function aggregateTemperature(PDO $pdo, string $plantDate, string $asof): array 
               AVG(COALESCE(variation, temp_max-temp_min)) AS swing_avg,
               STDDEV_POP(COALESCE(variation, temp_max-temp_min)) AS swing_std
             FROM weather_daily
-            WHERE date BETWEEN :d1 AND :d2";
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute(['d1' => $d1, 'd2' => $d2]);
-    $row = $stmt->fetch();
+            WHERE date BETWEEN ? AND ?";
+    $stmt = mysqli_prepare($link, $sql);
+    mysqli_stmt_bind_param($stmt, 'ss', $d1, $d2);
+    mysqli_stmt_execute($stmt);
+    $res = mysqli_stmt_get_result($stmt);
+    $row = $res ? mysqli_fetch_assoc($res) : null;
+    mysqli_stmt_close($stmt);
     return $row ?: [];
 }
 
-function findRecentPeerStats(PDO $pdo, string $groupType): array {
+function findRecentPeerStats(mysqli $link, string $groupType): array {
     foreach ([5, 10, 14] as $win) {
         foreach ([1, 0] as $strict) {
             $sql = "SELECT
@@ -52,12 +54,15 @@ function findRecentPeerStats(PDO $pdo, string $groupType): array {
                              DATEDIFF(c2.harvest_start, c2.plant_date) AS days_to_first,
                              (SELECT SUM(h.harvest_kg) FROM harvests h WHERE h.cycle_id=c2.id) AS total_yield
                       FROM cycles c2 JOIN beds b2 ON c2.bed_id=b2.id
-                      WHERE c2.harvest_end BETWEEN DATE_SUB(CURDATE(), INTERVAL :win DAY) AND CURDATE()
-                        AND (:strict = 0 OR b2.group_type = :groupType)
+                      WHERE c2.harvest_end BETWEEN DATE_SUB(CURDATE(), INTERVAL ? DAY) AND CURDATE()
+                        AND (? = 0 OR b2.group_type = ?)
                     ) t";
-            $stmt = $pdo->prepare($sql);
-            $stmt->execute(['win' => $win, 'strict' => $strict, 'groupType' => $groupType]);
-            $row = $stmt->fetch();
+            $stmt = mysqli_prepare($link, $sql);
+            mysqli_stmt_bind_param($stmt, 'iis', $win, $strict, $groupType);
+            mysqli_stmt_execute($stmt);
+            $res = mysqli_stmt_get_result($stmt);
+            $row = $res ? mysqli_fetch_assoc($res) : null;
+            mysqli_stmt_close($stmt);
             if ($row && (int)$row['k'] >= 1) {
                 return [
                     'peer_mean_total' => (float)$row['peer_mean_total'],
@@ -79,7 +84,8 @@ function findRecentPeerStats(PDO $pdo, string $groupType): array {
               FROM cycles c2
               WHERE c2.harvest_start IS NOT NULL AND c2.harvest_end IS NOT NULL
             ) t";
-    $row = $pdo->query($sql)->fetch();
+    $res = mysqli_query($link, $sql);
+    $row = $res ? mysqli_fetch_assoc($res) : null;
     return [
         'peer_mean_total' => (float)($row['peer_mean_total'] ?? 0),
         'peer_mean_days' => (float)($row['peer_mean_days'] ?? 0),
@@ -87,7 +93,7 @@ function findRecentPeerStats(PDO $pdo, string $groupType): array {
     ];
 }
 
-function findYOY(PDO $pdo, int $bedId, string $plantDate, string $groupType): array {
+function findYOY(mysqli $link, int $bedId, string $plantDate, string $groupType): array {
     $target = date('Y-m-d', strtotime($plantDate . ' -1 year'));
     $start = date('Y-m-d', strtotime($target . ' -5 days'));
     $end   = date('Y-m-d', strtotime($target . ' +5 days'));
@@ -101,12 +107,15 @@ function findYOY(PDO $pdo, int $bedId, string $plantDate, string $groupType): ar
                        DATEDIFF(c2.harvest_start, c2.plant_date) AS days_to_first,
                        (SELECT SUM(h.harvest_kg) FROM harvests h WHERE h.cycle_id=c2.id) AS total_yield
                 FROM cycles c2 JOIN beds b2 ON c2.bed_id=b2.id
-                WHERE c2.plant_date BETWEEN :start AND :end";
+                WHERE c2.plant_date BETWEEN ? AND ?";
 
-    $sql = $base . " AND c2.bed_id = :bedId) t";
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute(['start' => $start, 'end' => $end, 'bedId' => $bedId]);
-    $row = $stmt->fetch();
+    $sql = $base . " AND c2.bed_id = ?) t";
+    $stmt = mysqli_prepare($link, $sql);
+    mysqli_stmt_bind_param($stmt, 'ssi', $start, $end, $bedId);
+    mysqli_stmt_execute($stmt);
+    $res = mysqli_stmt_get_result($stmt);
+    $row = $res ? mysqli_fetch_assoc($res) : null;
+    mysqli_stmt_close($stmt);
     if ($row && (int)$row['k'] >= 1) {
         return [
             'yoy_mean_total' => (float)$row['yoy_mean_total'],
@@ -115,10 +124,13 @@ function findYOY(PDO $pdo, int $bedId, string $plantDate, string $groupType): ar
         ];
     }
 
-    $sql = $base . " AND b2.group_type = :groupType) t";
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute(['start' => $start, 'end' => $end, 'groupType' => $groupType]);
-    $row = $stmt->fetch();
+    $sql = $base . " AND b2.group_type = ?) t";
+    $stmt = mysqli_prepare($link, $sql);
+    mysqli_stmt_bind_param($stmt, 'sss', $start, $end, $groupType);
+    mysqli_stmt_execute($stmt);
+    $res = mysqli_stmt_get_result($stmt);
+    $row = $res ? mysqli_fetch_assoc($res) : null;
+    mysqli_stmt_close($stmt);
     if ($row && (int)$row['k'] >= 1) {
         return [
             'yoy_mean_total' => (float)$row['yoy_mean_total'],
@@ -128,9 +140,12 @@ function findYOY(PDO $pdo, int $bedId, string $plantDate, string $groupType): ar
     }
 
     $sql = $base . ") t";
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute(['start' => $start, 'end' => $end]);
-    $row = $stmt->fetch();
+    $stmt = mysqli_prepare($link, $sql);
+    mysqli_stmt_bind_param($stmt, 'ss', $start, $end);
+    mysqli_stmt_execute($stmt);
+    $res = mysqli_stmt_get_result($stmt);
+    $row = $res ? mysqli_fetch_assoc($res) : null;
+    mysqli_stmt_close($stmt);
     return [
         'yoy_mean_total' => (float)($row['yoy_mean_total'] ?? 0),
         'yoy_mean_days' => (float)($row['yoy_mean_days'] ?? 0),
@@ -138,10 +153,13 @@ function findYOY(PDO $pdo, int $bedId, string $plantDate, string $groupType): ar
     ];
 }
 
-function buildFeaturesForPlanting(PDO $pdo, int $cycleId): ?array {
-    $stmt = $pdo->prepare("SELECT c.id, c.plant_date, c.sow_date, c.bed_id, b.group_type FROM cycles c JOIN beds b ON c.bed_id=b.id WHERE c.id=?");
-    $stmt->execute([$cycleId]);
-    $c = $stmt->fetch();
+function buildFeaturesForPlanting(mysqli $link, int $cycleId): ?array {
+    $stmt = mysqli_prepare($link, "SELECT c.id, c.plant_date, c.sow_date, c.bed_id, b.group_type FROM cycles c JOIN beds b ON c.bed_id=b.id WHERE c.id=?");
+    mysqli_stmt_bind_param($stmt, 'i', $cycleId);
+    mysqli_stmt_execute($stmt);
+    $res = mysqli_stmt_get_result($stmt);
+    $c = $res ? mysqli_fetch_assoc($res) : null;
+    mysqli_stmt_close($stmt);
     if (!$c) { return null; }
 
     $plantDate = $c['plant_date'];
@@ -149,14 +167,14 @@ function buildFeaturesForPlanting(PDO $pdo, int $cycleId): ?array {
     $groupType = $c['group_type'];
     $bedId = (int)$c['bed_id'];
 
-    $asof = getAsof($pdo);
+    $asof = getAsof($link);
     if (!$asof) { return null; }
 
-    $temp = aggregateTemperature($pdo, $plantDate, $asof);
+    $temp = aggregateTemperature($link, $plantDate, $asof);
     if (($temp['temp_avg_mean'] ?? null) === null) { return null; }
 
-    $peer = findRecentPeerStats($pdo, $groupType);
-    $yoy  = findYOY($pdo, $bedId, $plantDate, $groupType);
+    $peer = findRecentPeerStats($link, $groupType);
+    $yoy  = findYOY($link, $bedId, $plantDate, $groupType);
     if (($yoy['k'] ?? 0) === 0) {
         $yoy['yoy_mean_total'] = $peer['peer_mean_total'];
         $yoy['yoy_mean_days'] = $peer['peer_mean_days'];
@@ -187,29 +205,33 @@ function buildFeaturesForPlanting(PDO $pdo, int $cycleId): ?array {
 
     $featuresJson = json_encode($features, JSON_UNESCAPED_UNICODE);
     $hash = hash('sha256', $featuresJson);
-    $stmt = $pdo->prepare("INSERT INTO features_cache (cycle_id, asof, features_json, hash) VALUES (?, ?, ?, ?)" );
-    $stmt->execute([$cycleId, $asof, $featuresJson, $hash]);
-
+    $stmt = mysqli_prepare($link, "INSERT INTO features_cache (cycle_id, asof, features_json, hash) VALUES (?, ?, ?, ?)");
+    mysqli_stmt_bind_param($stmt, 'isss', $cycleId, $asof, $featuresJson, $hash);
+    mysqli_stmt_execute($stmt);
+    mysqli_stmt_close($stmt);
     return $features;
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
-        $pdo->beginTransaction();
-
+        mysqli_begin_transaction($link);
         $bedId = (int)$_POST['bed_id'];
         $sow   = $_POST['sow_date'] ?? null;
         $plant = $_POST['plant_date'];
 
-        $stmt = $pdo->prepare("INSERT INTO cycles (bed_id, sow_date, plant_date, status) VALUES (?, ?, ?, 'planted')");
-        $stmt->execute([$bedId, $sow, $plant]);
-        $cycleId = (int)$pdo->lastInsertId();
+        $stmt = mysqli_prepare($link, "INSERT INTO cycles (bed_id, sow_date, plant_date, status) VALUES (?, ?, ?, 'planted')");
+        mysqli_stmt_bind_param($stmt, 'iss', $bedId, $sow, $plant);
+        mysqli_stmt_execute($stmt);
+        mysqli_stmt_close($stmt);
+        $cycleId = (int)mysqli_insert_id($link);
 
-        $features = buildFeaturesForPlanting($pdo, $cycleId);
+        $features = buildFeaturesForPlanting($link, $cycleId);
         if ($features === null) {
-            $stmt = $pdo->prepare("INSERT INTO alerts (date, type, payload_json, status) VALUES (CURDATE(),'data_missing', JSON_OBJECT('cycle_id', ?), 'open')");
-            $stmt->execute([$cycleId]);
-            $pdo->commit();
+            $stmt = mysqli_prepare($link, "INSERT INTO alerts (date, type, payload_json, status) VALUES (CURDATE(),'data_missing', JSON_OBJECT('cycle_id', ?), 'open')");
+            mysqli_stmt_bind_param($stmt, 'i', $cycleId);
+            mysqli_stmt_execute($stmt);
+            mysqli_stmt_close($stmt);
+            mysqli_commit($link);
             header('Location: /forecast/cycle.php?id=' . $cycleId . '&msg=temp_pending');
             exit;
         }
@@ -247,19 +269,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $pred = $json['predictions'][0] ?? null;
         if (!$pred) { throw new Exception('no predictions'); }
 
-        $stmt = $pdo->prepare("INSERT INTO predictions (cycle_id, model_id, pred_days, pred_total_kg) VALUES (?, ?, ?, ?)");
+        $stmt = mysqli_prepare($link, "INSERT INTO predictions (cycle_id, model_id, pred_days, pred_total_kg) VALUES (?, ?, ?, ?)");
         $modelId = basename(dirname($json['model_path_days'] ?? 'current'));
-        $stmt->execute([$cycleId, $modelId, $pred['days'], $pred['yield']]);
+        mysqli_stmt_bind_param($stmt, 'isdd', $cycleId, $modelId, $pred['days'], $pred['yield']);
+        mysqli_stmt_execute($stmt);
+        mysqli_stmt_close($stmt);
 
-        $pdo->prepare("UPDATE cycles SET expected_harvest = DATE_ADD(plant_date, INTERVAL ROUND(?) DAY) WHERE id=?")
-            ->execute([$pred['days'], $cycleId]);
+        $stmt = mysqli_prepare($link, "UPDATE cycles SET expected_harvest = DATE_ADD(plant_date, INTERVAL ROUND(?) DAY) WHERE id=?");
+        mysqli_stmt_bind_param($stmt, 'di', $pred['days'], $cycleId);
+        mysqli_stmt_execute($stmt);
+        mysqli_stmt_close($stmt);
 
-        $pdo->commit();
-        header('Location: /forecast/cycle.php?id=' . $cycleId . '&msg=predicted');
+        mysqli_commit($link);
+
+      　header('Location: /forecast/cycle.php?id=' . $cycleId . '&msg=predicted');
         exit;
 
     } catch (Throwable $e) {
-        if ($pdo->inTransaction()) { $pdo->rollBack(); }
+        mysqli_rollback($link);
         error_log('[planting] failed: ' . $e->getMessage());
         header('Location: /forecast/data_entry/planting.php?error=1');
         exit;
