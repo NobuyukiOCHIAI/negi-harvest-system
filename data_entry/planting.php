@@ -209,14 +209,12 @@ function buildFeaturesForPlanting(mysqli $link, int $cycleId): ?array {
     mysqli_stmt_bind_param($stmt, 'isss', $cycleId, $asof, $featuresJson, $hash);
     mysqli_stmt_execute($stmt);
     mysqli_stmt_close($stmt);
-
     return $features;
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         mysqli_begin_transaction($link);
-
         $bedId = (int)$_POST['bed_id'];
         $sow   = $_POST['sow_date'] ?? null;
         $plant = $_POST['plant_date'];
@@ -283,7 +281,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         mysqli_stmt_close($stmt);
 
         mysqli_commit($link);
-        header('Location: /forecast/cycle.php?id=' . $cycleId . '&msg=predicted');
+
+      　header('Location: /forecast/cycle.php?id=' . $cycleId . '&msg=predicted');
         exit;
 
     } catch (Throwable $e) {
@@ -316,8 +315,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       <select id="bed" name="bed_id" class="form-select form-select-lg" required>
         <option value="">選択してください</option>
         <?php
-        $res = mysqli_query($link, "SELECT id, name FROM beds WHERE active=1 ORDER BY name");
-        while ($b = mysqli_fetch_assoc($res)) {
+        $stmt = $pdo->query("SELECT id, name FROM beds WHERE active=1 ORDER BY name");
+        while ($b = $stmt->fetch()) {
             echo "<option value='{$b['id']}'>{$b['name']}</option>";
         }
         ?>
