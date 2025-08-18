@@ -60,17 +60,16 @@ CREATE TABLE IF NOT EXISTS alerts (
 CREATE OR REPLACE VIEW weekly_harvest_forecast_v AS
 SELECT
   DATE_SUB(c.harvest_end, INTERVAL (DAYOFWEEK(c.harvest_end)-1) DAY) AS week_start_date,
-  SUM(COALESCE(p.postproc_total_kg, p.pred_total_kg)) AS forecast_total_kg
+  SUM(COALESCE(pr.postproc_total_kg, pr.pred_total_kg)) AS forecast_total_kg
 FROM cycles c
-JOIN (
-  SELECT pr1.*
-  FROM predictions pr1
-  JOIN (
-    SELECT cycle_id, MAX(created_at) AS created_at
-    FROM predictions
-    GROUP BY cycle_id
-  ) pr2 ON pr1.cycle_id = pr2.cycle_id AND pr1.created_at = pr2.created_at
-) p ON c.id = p.cycle_id
+JOIN predictions pr ON pr.cycle_id = c.id
+LEFT JOIN predictions nx
+  ON nx.cycle_id = pr.cycle_id
+ AND (
+       nx.created_at >  pr.created_at
+    OR (nx.created_at = pr.created_at AND nx.id > pr.id)
+ )
+WHERE nx.cycle_id IS NULL
 GROUP BY week_start_date;
 
 CREATE OR REPLACE VIEW weekly_gap_v AS
