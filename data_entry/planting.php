@@ -1,8 +1,9 @@
 <?php
 require_once '../db.php';
 require_once '../api/json_utils.php';
-require_once '../api/logging.php';
+require_once '../api/logging.php'; // log_error($message, array $ctx=[])
 mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+$__stage = 'begin';
 
 function getEnvOrDefault($key, $default = null) {
     $v = getenv($key);
@@ -228,9 +229,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         mysqli_stmt_execute($stmt);
         mysqli_stmt_close($stmt);
         $cycleId = (int)mysqli_insert_id($link);
+        $__stage = 'insert-cycles';
 
+        // 特徴量の作成（温度フォールバック＋収穫日基準の近傍）
+        $__stage = 'build-features';
         $features = buildFeaturesForPlanting($link, $cycleId);
         if ($features === null) {
+            $__stage = 'alert-data-missing';
             $payload = encode_json(['cycle_id' => $cycleId]);
             $stmt = mysqli_prepare($link, "INSERT INTO alerts (date, type, payload_json, status) VALUES (CURDATE(),'data_missing', ?, 'open')");
             mysqli_stmt_bind_param($stmt, 's', $payload);
@@ -241,6 +246,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
 
+        $__stage = 'call-api';
         $apiUrl = getEnvOrDefault('XGB_API_URL', 'http://tk2-118-59530.vs.sakura.ne.jp/xgbapi/api/predict_both');
         $apiKey = getEnvOrDefault('XGB_API_KEY', '');
         $payload = json_encode(['data' => [['features' => $features]]], JSON_UNESCAPED_UNICODE);
@@ -274,26 +280,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $pred = $json['predictions'][0] ?? null;
         if (!$pred) { throw new Exception('no predictions'); }
 
+        $__stage = 'insert-predictions';
         $stmt = mysqli_prepare($link, "INSERT INTO predictions (cycle_id, model_id, pred_days, pred_total_kg) VALUES (?, ?, ?, ?)");
         $modelId = basename(dirname($json['model_path_days'] ?? 'current'));
         mysqli_stmt_bind_param($stmt, 'isdd', $cycleId, $modelId, $pred['days'], $pred['yield']);
         mysqli_stmt_execute($stmt);
         mysqli_stmt_close($stmt);
 
-        $stmt = mysqli_prepare($link, "UPDATE cycles SET expected_harvest = DATE_ADD(plant_date, INTERVAL ROUND(?) DAY) WHERE id=?");
-        mysqli_stmt_bind_param($stmt, 'di', $pred['days'], $cycleId);
-        mysqli_stmt_execute($stmt);
-        mysqli_stmt_close($stmt);
+        // 期待収穫日は DB 保存しない（列無し）。必要なら画面側で：
+        // $expectedDate = (new DateTime($plant))->modify('+' . round($pred['days']) . ' day')->format('Y-m-d');
 
         mysqli_commit($link);
         header('Location: ../cycle.php?id=' . $cycleId . '&msg=predicted');
         exit;
 
     } catch (Throwable $e) {
-        mysqli_rollback($link);
-        log_error('[planting] failed: ' . $e->getMessage());
-        header('Location: planting.php?error=1');
-        exit;
+        if (isset($link) && $link instanceof mysqli) { @mysqli_rollback($link); }
+        log_error('planting failed', ['stage'=>$__stage, 'error'=>$e->getMessage()]);
+        header('Location: planting.php?error=1'); exit;
     }
 }
 ?>
