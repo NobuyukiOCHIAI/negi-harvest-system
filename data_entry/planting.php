@@ -209,12 +209,14 @@ function buildFeaturesForPlanting(mysqli $link, int $cycleId): ?array {
     mysqli_stmt_bind_param($stmt, 'isss', $cycleId, $asof, $featuresJson, $hash);
     mysqli_stmt_execute($stmt);
     mysqli_stmt_close($stmt);
+
     return $features;
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         mysqli_begin_transaction($link);
+
         $bedId = (int)$_POST['bed_id'];
         $sow   = $_POST['sow_date'] ?? null;
         $plant = $_POST['plant_date'];
@@ -232,7 +234,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             mysqli_stmt_execute($stmt);
             mysqli_stmt_close($stmt);
             mysqli_commit($link);
-            header('Location: /forecast/cycle.php?id=' . $cycleId . '&msg=temp_pending');
+            header('Location: ../cycle.php?id=' . $cycleId . '&msg=temp_pending');
             exit;
         }
 
@@ -281,13 +283,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         mysqli_stmt_close($stmt);
 
         mysqli_commit($link);
-        header('Location: /forecast/cycle.php?id=' . $cycleId . '&msg=predicted');
+        header('Location: ../cycle.php?id=' . $cycleId . '&msg=predicted');
         exit;
 
     } catch (Throwable $e) {
         mysqli_rollback($link);
         error_log('[planting] failed: ' . $e->getMessage());
-        header('Location: /forecast/data_entry/planting.php?error=1');
+        header('Location: planting.php?error=1');
         exit;
     }
 }
