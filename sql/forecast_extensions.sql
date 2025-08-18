@@ -50,7 +50,6 @@ CREATE TABLE IF NOT EXISTS alerts (
   id INT AUTO_INCREMENT PRIMARY KEY,
   date DATE NOT NULL,
   type ENUM('shortage','delay','loss_spike','data_missing') NOT NULL,
-  -- payload_json is stored as TEXT and validated by the application
   payload_json TEXT,
   status ENUM('open','closed') NOT NULL DEFAULT 'open',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -58,8 +57,6 @@ CREATE TABLE IF NOT EXISTS alerts (
 );
 
 -- Forecast views
--- MySQL 5.5 cannot use subqueries in FROM within views; use an anti-self join
--- on predictions to select the latest row per cycle.
 CREATE OR REPLACE VIEW weekly_harvest_forecast_v AS
 SELECT
   DATE_SUB(c.harvest_end, INTERVAL (DAYOFWEEK(c.harvest_end)-1) DAY) AS week_start_date,
