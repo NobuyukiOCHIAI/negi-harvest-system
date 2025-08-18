@@ -209,14 +209,12 @@ function buildFeaturesForPlanting(mysqli $link, int $cycleId): ?array {
     mysqli_stmt_bind_param($stmt, 'isss', $cycleId, $asof, $featuresJson, $hash);
     mysqli_stmt_execute($stmt);
     mysqli_stmt_close($stmt);
-
     return $features;
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         mysqli_begin_transaction($link);
-
         $bedId = (int)$_POST['bed_id'];
         $sow   = $_POST['sow_date'] ?? null;
         $plant = $_POST['plant_date'];
