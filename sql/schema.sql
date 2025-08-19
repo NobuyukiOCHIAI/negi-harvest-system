@@ -1921,27 +1921,6 @@ INSERT INTO `weather_daily` (`date`, `temp_avg`, `temp_max`, `temp_min`, `variat
 -- --------------------------------------------------------
 
 --
--- ビュー用の代替構造 `weekly_gap_v`
---
-CREATE TABLE IF NOT EXISTS `weekly_gap_v` (
-`week_start_date` date
-,`forecast_total_kg` decimal(32,3)
-,`committed_amount_kg` decimal(10,2)
-,`diff_kg` decimal(33,3)
-);
--- --------------------------------------------------------
-
---
--- ビュー用の代替構造 `weekly_harvest_forecast_v`
---
-CREATE TABLE IF NOT EXISTS `weekly_harvest_forecast_v` (
-`week_start_date` date
-,`forecast_total_kg` decimal(32,3)
-,`beds_count` bigint(21)
-);
--- --------------------------------------------------------
-
---
 -- ビュー用の構造 `harvest_actual_base_v`
 --
 DROP TABLE IF EXISTS `harvest_actual_base_v`;
@@ -1951,22 +1930,53 @@ CREATE ALGORITHM=UNDEFINED VIEW `harvest_actual_base_v` AS select `c`.`id` AS `c
 -- --------------------------------------------------------
 
 --
--- ビュー用の構造 `weekly_gap_v`
---
-DROP TABLE IF EXISTS `weekly_gap_v`;
-
-CREATE ALGORITHM=UNDEFINED VIEW `weekly_gap_v` AS select `f`.`week_start_date` AS `week_start_date`,`f`.`forecast_total_kg` AS `forecast_total_kg`,`s`.`committed_amount_kg` AS `committed_amount_kg`,(`f`.`forecast_total_kg` - ifnull(`s`.`committed_amount_kg`,0)) AS `diff_kg` from (`weekly_harvest_forecast_v` `f` left join `calendar_shipments` `s` on((`f`.`week_start_date` = `s`.`week_start_date`)));
-
--- --------------------------------------------------------
-
---
 -- ビュー用の構造 `weekly_harvest_forecast_v`
 --
-DROP TABLE IF EXISTS `weekly_harvest_forecast_v`;
+DROP VIEW IF EXISTS `weekly_harvest_forecast_v`;
 
-CREATE ALGORITHM=UNDEFINED VIEW `weekly_harvest_forecast_v` AS select ((`c`.`plant_date` + interval cast(round(`lp`.`pred_days`,0) as signed) day) - interval (dayofweek((`c`.`plant_date` + interval cast(round(`lp`.`pred_days`,0) as signed) day)) - 1) day) AS `week_start_date`,sum(coalesce(`lp`.`postproc_total_kg`,`lp`.`pred_total_kg`,0)) AS `forecast_total_kg`,count(0) AS `beds_count` from (`cycles` `c` join `predictions` `lp` on(((`lp`.`cycle_id` = `c`.`id`) and (not(exists(select 1 from `predictions` `p2` where ((`p2`.`cycle_id` = `lp`.`cycle_id`) and (`p2`.`created_at` > `lp`.`created_at`)))))))) where isnull(`c`.`harvest_end`) and (`c`.`plant_date` + interval cast(round(`lp`.`pred_days`,0) as signed) day) >= curdate() group by ((`c`.`plant_date` + interval cast(round(`lp`.`pred_days`,0) as signed) day) - interval (dayofweek((`c`.`plant_date` + interval cast(round(`lp`.`pred_days`,0) as signed) day)) - 1) day);
+CREATE ALGORITHM=UNDEFINED VIEW `weekly_harvest_forecast_v` AS
+SELECT
+  (
+    (c.plant_date + INTERVAL CAST(ROUND(lp.pred_days,0) AS SIGNED) DAY)
+    - INTERVAL (DAYOFWEEK(c.plant_date + INTERVAL CAST(ROUND(lp.pred_days,0) AS SIGNED) DAY) - 1) DAY
+  ) AS week_start_date,
+  SUM(COALESCE(lp.postproc_total_kg, lp.pred_total_kg, 0)) AS forecast_total_kg,
+  COUNT(0) AS beds_count
+FROM cycles c
+JOIN predictions lp
+  ON lp.cycle_id = c.id
+ AND NOT EXISTS (
+       SELECT 1
+       FROM predictions p2
+       WHERE p2.cycle_id = lp.cycle_id
+         AND p2.created_at > lp.created_at
+     )
+WHERE c.harvest_end IS NULL
+GROUP BY
+  (
+    (c.plant_date + INTERVAL CAST(ROUND(lp.pred_days,0) AS SIGNED) DAY)
+    - INTERVAL (DAYOFWEEK(c.plant_date + INTERVAL CAST(ROUND(lp.pred_days,0) AS SIGNED) DAY) - 1) DAY
+  );
 
 --
+/* ---- weekly_gap_v: 予測×コミット + beds_count ---- */
+DROP VIEW IF EXISTS weekly_gap_v;
+DROP TABLE IF EXISTS weekly_gap_v;
+
+CREATE ALGORITHM=UNDEFINED
+SQL SECURITY INVOKER
+VIEW weekly_gap_v AS
+SELECT
+  f.week_start_date                                    AS week_start_date,
+  f.beds_count                                         AS beds_count,
+  f.forecast_total_kg                                  AS forecast_total_kg,
+  s.committed_amount_kg                                AS committed_amount_kg,
+  (COALESCE(f.forecast_total_kg,0) - COALESCE(s.committed_amount_kg,0)) AS diff_kg
+FROM weekly_harvest_forecast_v f
+LEFT JOIN calendar_shipments s
+  ON s.week_start_date = f.week_start_date;
+
+-- --------------------------------------------------------
 -- ダンプしたテーブルの制約
 --
 
