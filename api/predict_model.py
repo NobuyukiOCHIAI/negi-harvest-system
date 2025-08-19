@@ -2,7 +2,7 @@
 import argparse
 import json
 import os
-from datetime import timedelta
+from datetime import datetime, date, timedelta
 
 import pymysql
 import pandas as pd
@@ -156,7 +156,6 @@ def compute_and_update_features(cycle_id):
                 """
                 UPDATE cycles SET
                     base_growth_days=%s,
-                    expected_harvest=%s,
                     sales_adjust_days=%s,
                     similar_bed_avg_yield=%s,
                     similar_bed_avg_days=%s,
@@ -175,7 +174,6 @@ def compute_and_update_features(cycle_id):
                 """,
                 (
                     base_growth_days,
-                    expected_harvest,
                     sales_adjust_days,
                     similar_yield,
                     similar_days,
@@ -197,7 +195,7 @@ def compute_and_update_features(cycle_id):
 
             cur.execute("SELECT * FROM cycles WHERE id=%s", (cycle_id,))
             features = cur.fetchone()
-            return features, None
+            return features, expected_harvest, None
     finally:
         conn.close()
 
@@ -245,7 +243,7 @@ def main():
     parser.add_argument("--partial_ratio", type=float)
     args = parser.parse_args()
 
-    features, err = compute_and_update_features(args.cycle_id)
+    features, expected_harvest, err = compute_and_update_features(args.cycle_id)
     if err:
         print(json.dumps({"status": "error", "message": err}, ensure_ascii=False))
         return
@@ -257,11 +255,24 @@ def main():
         partial_ratio=args.partial_ratio,
     )
 
+    # 予測後にオンザフライ算出（DB保存はしない）
+    if not expected_harvest:
+        plant = features.get("plant_date")
+        if isinstance(plant, str):
+            try:
+                plant = datetime.strptime(plant, "%Y-%m-%d").date()
+            except Exception:
+                plant = None
+        if isinstance(plant, date):
+            expected_harvest = plant + timedelta(days=int(pred_days))
+        else:
+            expected_harvest = None
+
     result = {
         "status": "success",
         "cycle_id": args.cycle_id,
-        "expected_harvest_date": features["expected_harvest"].strftime("%Y-%m-%d")
-        if features["expected_harvest"]
+        "expected_harvest_date": expected_harvest.strftime("%Y-%m-%d")
+        if expected_harvest
         else None,
         "predicted_growth_days": pred_days,
         "predicted_yield": round(pred_yield, 1),

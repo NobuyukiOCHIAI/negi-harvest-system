@@ -71,3 +71,20 @@ negi-harvest-system/
     ├── get_beds.php
     └── get_loss_types.php
 ```
+
+## 予測・実績ビュー運用（2025-08-19 更新）
+
+- **weekly_harvest_forecast_v** … 未収穫（部分収穫中含む）× 最新予測のみを週（日曜起点）で集計  
+  - 列: `week_start_date`, `forecast_total_kg`, `beds_count`  
+  - 期待日が過去でも **未収穫であれば集計対象**（遅延の見落とし防止）  
+  - 予測行の生成契機: 定植登録 / 収穫登録 / `weather_daily` 更新バッチ（未完了のみ差分再予測）
+
+- **weekly_gap_v** … 上記予測と `calendar_shipments` を `week_start_date` でJOIN  
+  - 列: `week_start_date`, `beds_count`, `forecast_total_kg`, `committed_amount_kg`, `diff_kg`  
+  - `SQL SECURITY INVOKER` を使用（DEFINER依存を排除）
+
+- **harvest_actual_base_v** … 収穫終了日ベースの実績明細（週・月の起点は日曜／月初）
+
+### expected_harvest の扱い
+- DBには **保存しない**（列追加しない）。必要時は `plant_date + ROUND(pred_days)` を**都度算出**して表示に使用。  
+- アプリ側（PHP/Python）で `expected_harvest` をオンザフライ計算するのは可（DBへの永続化はしない）。
