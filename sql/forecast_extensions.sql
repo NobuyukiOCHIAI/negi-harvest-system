@@ -59,18 +59,33 @@ CREATE TABLE IF NOT EXISTS alerts (
 -- Forecast views
 CREATE OR REPLACE VIEW weekly_harvest_forecast_v AS
 SELECT
-  DATE_SUB(c.harvest_end, INTERVAL (DAYOFWEEK(c.harvest_end)-1) DAY) AS week_start_date,
-  SUM(COALESCE(pr.postproc_total_kg, pr.pred_total_kg)) AS forecast_total_kg
+  DATE_SUB(
+    DATE_ADD(c.plant_date, INTERVAL CAST(ROUND(pr.pred_days) AS SIGNED) DAY),
+    INTERVAL (DAYOFWEEK(DATE_ADD(c.plant_date, INTERVAL CAST(ROUND(pr.pred_days) AS SIGNED) DAY)) - 1) DAY
+  ) AS week_start_date,
+  SUM(COALESCE(pr.postproc_total_kg, pr.pred_total_kg)) AS forecast_total_kg,
+  COUNT(*) AS beds_count
 FROM cycles c
-JOIN predictions pr ON pr.cycle_id = c.id
-LEFT JOIN predictions nx
-  ON nx.cycle_id = pr.cycle_id
- AND (
-       nx.created_at >  pr.created_at
-    OR (nx.created_at = pr.created_at AND nx.id > pr.id)
- )
-WHERE nx.cycle_id IS NULL
+JOIN predictions pr
+  ON pr.cycle_id = c.id
+ AND NOT EXISTS (
+       SELECT 1 FROM predictions p2
+        WHERE p2.cycle_id = pr.cycle_id
+          AND p2.created_at > pr.created_at
+     )
+WHERE c.harvest_end IS NULL
+  AND DATE_ADD(c.plant_date, INTERVAL CAST(ROUND(pr.pred_days) AS SIGNED) DAY) >= CURDATE()
 GROUP BY week_start_date;
+
+CREATE OR REPLACE VIEW harvest_actual_base_v AS
+SELECT
+  c.id AS cycle_id,
+  c.harvest_end AS final_dt,
+  DATE_SUB(c.harvest_end, INTERVAL (DAYOFWEEK(c.harvest_end)-1) DAY) AS week_start_date,
+  DATE_SUB(c.harvest_end, INTERVAL (DAYOFMONTH(c.harvest_end)-1) DAY) AS month_start_date,
+  COALESCE((SELECT SUM(h.harvest_kg) FROM harvests h WHERE h.cycle_id = c.id),0) AS actual_total_kg
+FROM cycles c
+WHERE c.harvest_end IS NOT NULL;
 
 CREATE OR REPLACE VIEW weekly_gap_v AS
 SELECT
@@ -81,16 +96,53 @@ SELECT
 FROM weekly_harvest_forecast_v f
 LEFT JOIN calendar_shipments s ON f.week_start_date = s.week_start_date;
 
--- Stored procedure example for sales adjust days
+-- Stored procedure for sales adjust days
 DELIMITER $$
 CREATE PROCEDURE sp_update_sales_adjust_days(IN p_cycle_id INT)
-BEGIN
-  DECLARE exp DATE;
-  DECLARE actual DATE;
-  SELECT expected_harvest INTO exp FROM cycles WHERE id = p_cycle_id;
-  SELECT MIN(pickup_date) INTO actual FROM collections WHERE cycle_id = p_cycle_id;
-  IF exp IS NOT NULL AND actual IS NOT NULL THEN
-    UPDATE cycles SET sales_adjust_days = DATEDIFF(actual, exp) WHERE id = p_cycle_id;
+proc: BEGIN
+  DECLARE v_pickup DATE;
+  DECLARE v_plant  DATE;
+  DECLARE v_pred_days DECIMAL(8,3);
+  DECLARE v_expected DATE;
+
+  /* 1) 最初の実集荷日 */
+  SELECT MIN(pickup_date) INTO v_pickup
+  FROM collections
+  WHERE cycle_id = p_cycle_id;
+
+  IF v_pickup IS NULL THEN
+    LEAVE proc; -- 集荷が無ければ何もしないで終了
   END IF;
+
+  /* 2) 定植日 */
+  SELECT plant_date INTO v_plant
+  FROM cycles
+  WHERE id = p_cycle_id;
+
+  /* 3) 初回集荷"直前"の最新予測（無ければ最新） */
+  SELECT p.pred_days
+    INTO v_pred_days
+  FROM predictions p
+  WHERE p.cycle_id = p_cycle_id
+    AND p.created_at <= v_pickup
+  ORDER BY p.created_at DESC
+  LIMIT 1;
+
+  IF v_pred_days IS NULL THEN
+    SELECT p.pred_days
+      INTO v_pred_days
+    FROM predictions p
+    WHERE p.cycle_id = p_cycle_id
+    ORDER BY p.created_at DESC
+    LIMIT 1;
+  END IF;
+
+  IF v_pred_days IS NULL THEN
+    LEAVE proc;
+  END IF;
+
+  SET v_expected = DATE_ADD(v_plant, INTERVAL ROUND(v_pred_days,0) DAY);
+  UPDATE cycles SET sales_adjust_days = DATEDIFF(v_pickup, v_expected)
+  WHERE id = p_cycle_id;
 END$$
 DELIMITER ;
