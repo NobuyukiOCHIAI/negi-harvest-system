@@ -31,6 +31,16 @@
 - YOY は前年±5日のデータを同一ベッド＞同一グループ＞全体の順で検索。
 - 期待収穫日は DB に保存せず、`expected = plant_date + ROUND(pred_days)` を都度算出します。
 
+## 集計ビュー
+
+- `weekly_harvest_forecast_v`: 未収穫サイクルの最新予測のみを週（日曜起点）で集計。
+  - `forecast_total_kg` = SUM(COALESCE(postproc_total_kg, pred_total_kg))
+  - `beds_count` = 集計週に属する未収穫サイクル件数
+  - 予測行の生成契機：定植登録／収穫登録／weather_daily 更新バッチ（未完了サイクルのみ差分再予測）
+- `harvest_actual_base_v`: 収穫終了日ベースの実績のみを集計（週・月の起点は日曜／月初）。予測は含めない。
+  - 週次／月次の集計は SELECT 側で GROUP BY week_start_date または GROUP BY month_start_date を使用。
+  - 過去週の振り返りは実績ビュー（収穫終了日ベース）を使用すること。
+
 ## 障害時の動作
 
 - `weather_daily` が空、または asof が取得不能の場合は予測を停止し `alerts(data_missing)` を記録します。

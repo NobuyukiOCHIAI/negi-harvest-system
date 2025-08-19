@@ -24,7 +24,7 @@ DELIMITER $$
 --
 -- プロシージャ
 --
-CREATE DEFINER=`love-media`@`%` PROCEDURE `sp_update_sales_adjust_days`(IN p_cycle_id INT)
+CREATE PROCEDURE `sp_update_sales_adjust_days`(IN p_cycle_id INT)
 proc: BEGIN
   DECLARE v_pickup DATE;
   DECLARE v_plant  DATE;
@@ -1946,7 +1946,7 @@ CREATE TABLE IF NOT EXISTS `weekly_harvest_forecast_v` (
 --
 DROP TABLE IF EXISTS `harvest_actual_base_v`;
 
-CREATE ALGORITHM=UNDEFINED DEFINER=`love-media`@`%` SQL SECURITY DEFINER VIEW `harvest_actual_base_v` AS select `c`.`id` AS `cycle_id`,`c`.`harvest_end` AS `final_dt`,(`c`.`harvest_end` - interval (dayofweek(`c`.`harvest_end`) - 1) day) AS `week_start_date`,(`c`.`harvest_end` - interval (dayofmonth(`c`.`harvest_end`) - 1) day) AS `month_start_date`,coalesce((select sum(`h`.`harvest_kg`) from `harvests` `h` where (`h`.`cycle_id` = `c`.`id`)),0) AS `actual_total_kg` from `cycles` `c` where (`c`.`harvest_end` is not null);
+CREATE ALGORITHM=UNDEFINED VIEW `harvest_actual_base_v` AS select `c`.`id` AS `cycle_id`,`c`.`harvest_end` AS `final_dt`,(`c`.`harvest_end` - interval (dayofweek(`c`.`harvest_end`) - 1) day) AS `week_start_date`,(`c`.`harvest_end` - interval (dayofmonth(`c`.`harvest_end`) - 1) day) AS `month_start_date`,coalesce((select sum(`h`.`harvest_kg`) from `harvests` `h` where (`h`.`cycle_id` = `c`.`id`)),0) AS `actual_total_kg` from `cycles` `c` where (`c`.`harvest_end` is not null);
 
 -- --------------------------------------------------------
 
@@ -1955,7 +1955,7 @@ CREATE ALGORITHM=UNDEFINED DEFINER=`love-media`@`%` SQL SECURITY DEFINER VIEW `h
 --
 DROP TABLE IF EXISTS `weekly_gap_v`;
 
-CREATE ALGORITHM=UNDEFINED DEFINER=`love-media`@`%` SQL SECURITY DEFINER VIEW `weekly_gap_v` AS select `f`.`week_start_date` AS `week_start_date`,`f`.`forecast_total_kg` AS `forecast_total_kg`,`s`.`committed_amount_kg` AS `committed_amount_kg`,(`f`.`forecast_total_kg` - ifnull(`s`.`committed_amount_kg`,0)) AS `diff_kg` from (`weekly_harvest_forecast_v` `f` left join `calendar_shipments` `s` on((`f`.`week_start_date` = `s`.`week_start_date`)));
+CREATE ALGORITHM=UNDEFINED VIEW `weekly_gap_v` AS select `f`.`week_start_date` AS `week_start_date`,`f`.`forecast_total_kg` AS `forecast_total_kg`,`s`.`committed_amount_kg` AS `committed_amount_kg`,(`f`.`forecast_total_kg` - ifnull(`s`.`committed_amount_kg`,0)) AS `diff_kg` from (`weekly_harvest_forecast_v` `f` left join `calendar_shipments` `s` on((`f`.`week_start_date` = `s`.`week_start_date`)));
 
 -- --------------------------------------------------------
 
@@ -1964,7 +1964,7 @@ CREATE ALGORITHM=UNDEFINED DEFINER=`love-media`@`%` SQL SECURITY DEFINER VIEW `w
 --
 DROP TABLE IF EXISTS `weekly_harvest_forecast_v`;
 
-CREATE ALGORITHM=UNDEFINED DEFINER=`love-media`@`%` SQL SECURITY DEFINER VIEW `weekly_harvest_forecast_v` AS select ((`c`.`plant_date` + interval cast(round(`lp`.`pred_days`,0) as signed) day) - interval (dayofweek((`c`.`plant_date` + interval cast(round(`lp`.`pred_days`,0) as signed) day)) - 1) day) AS `week_start_date`,sum(coalesce(`lp`.`postproc_total_kg`,`lp`.`pred_total_kg`,0)) AS `forecast_total_kg`,count(0) AS `beds_count` from (`cycles` `c` join `predictions` `lp` on(((`lp`.`cycle_id` = `c`.`id`) and (not(exists(select 1 from `predictions` `p2` where ((`p2`.`cycle_id` = `lp`.`cycle_id`) and (`p2`.`created_at` > `lp`.`created_at`)))))))) where isnull(`c`.`harvest_end`) group by ((`c`.`plant_date` + interval cast(round(`lp`.`pred_days`,0) as signed) day) - interval (dayofweek((`c`.`plant_date` + interval cast(round(`lp`.`pred_days`,0) as signed) day)) - 1) day);
+CREATE ALGORITHM=UNDEFINED VIEW `weekly_harvest_forecast_v` AS select ((`c`.`plant_date` + interval cast(round(`lp`.`pred_days`,0) as signed) day) - interval (dayofweek((`c`.`plant_date` + interval cast(round(`lp`.`pred_days`,0) as signed) day)) - 1) day) AS `week_start_date`,sum(coalesce(`lp`.`postproc_total_kg`,`lp`.`pred_total_kg`,0)) AS `forecast_total_kg`,count(0) AS `beds_count` from (`cycles` `c` join `predictions` `lp` on(((`lp`.`cycle_id` = `c`.`id`) and (not(exists(select 1 from `predictions` `p2` where ((`p2`.`cycle_id` = `lp`.`cycle_id`) and (`p2`.`created_at` > `lp`.`created_at`)))))))) where isnull(`c`.`harvest_end`) and (`c`.`plant_date` + interval cast(round(`lp`.`pred_days`,0) as signed) day) >= curdate() group by ((`c`.`plant_date` + interval cast(round(`lp`.`pred_days`,0) as signed) day) - interval (dayofweek((`c`.`plant_date` + interval cast(round(`lp`.`pred_days`,0) as signed) day)) - 1) day);
 
 --
 -- ダンプしたテーブルの制約
