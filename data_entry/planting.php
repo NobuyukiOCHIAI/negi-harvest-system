@@ -315,10 +315,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   <h4 class="mb-4 text-primary">🌱 定植入力</h4>
   <form method="POST">
     <div class="mb-4">
-      <label for="plant_date" class="form-label fs-5">定植日</label>
-      <input type="date" id="plant_date" name="plant_date" class="form-control form-control-lg" required>
-    </div>
-    <div class="mb-4">
       <label for="bed" class="form-label fs-5">ベッド名</label>
       <select id="bed" name="bed_id" class="form-select form-select-lg" required>
         <option value="">選択してください</option>
@@ -335,6 +331,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       <label for="sow_date" class="form-label fs-5">播種日</label>
       <input type="date" id="sow_date" name="sow_date" class="form-control form-control-lg">
       <div class="form-text">育苗日数: <span id="nursery_days">0</span>日</div>
+    </div>
+    <div class="mb-4">
+      <label for="plant_date" class="form-label fs-5">定植日</label>
+      <input type="date" id="plant_date" name="plant_date" class="form-control form-control-lg" required>
     </div>
     <div class="d-grid">
       <button type="submit" class="btn btn-primary btn-lg">登録</button>
