@@ -105,7 +105,7 @@ negi-harvest-system/
 1. `collections` に対象 `cycle_id` の `pickup_date` を1件追加
 2. 直前時点までの `predictions` が存在することを確認
 3. 収穫登録処理後、`cycles.sales_adjust_days` が更新されたか確認
-4. `rebuild_features_for_cycle($pdo, $cycleId)` により `features_cache` 再生成
+4. `rebuild_features_for_cycle($link, $cycleId)` により `features_cache` 再生成
 5. SQLで `features_json` に "営業調整日数" が入っていることを確認
    ```sql
    SELECT asof,
@@ -122,3 +122,62 @@ negi-harvest-system/
 2. `sp_update_sales_adjust_days` を再作成（または DROP）
 3. `ALTER TABLE cycles DROP COLUMN sales_adjust_days;`
 4. `planting.php` / `harvest.php` で `rebuild_features_for_cycle` 呼び出しをコメントアウト
+
+## DB接続ポリシー（PDO禁止／mysqliのみ）
+
+本プロジェクトでは PDOは使用しません。mysqli＋db.php の $link を唯一の接続として使用します。
+接続は必ず `require_once __DIR__ . '/db.php';` で取得し、$link（mysqli）を関数に引き回す方針です。
+
+### 接続定義（既存）
+
+```php
+// db.php
+$link = mysqli_connect('mysql470.db.sakura.ne.jp', 'love-media', 'EuvaMLe8');
+if (mysqli_connect_errno() > 0) { echo "DB Connection Error"; exit; }
+mysqli_select_db($link, 'love-media_dp');
+mysqli_set_charset($link, 'utf8');
+```
+
+### 特徴量ビルド（共通モジュール）
+
+ファイル：`lib/build_features.php`（mysqli版）
+
+公開関数：
+
+```
+rebuild_features_for_cycle(mysqli $link, int $cycleId, ?string $asofDate=null): array
+```
+
+返り値：XGBAPIへ送信する features配列
+
+副作用：`features_cache(cycle_id, asof, features_json, hash)` を更新
+
+仕様：`features_json` は `{ "features": {...} }`、`hash = sha256(cycle_id|asof|features_json)`
+
+必須項目："営業調整日数"（`COALESCE(cycles.sales_adjust_days, 0)`）
+
+### 呼び出し例（定植登録：data_entry/planting.php）
+
+```php
+require_once __DIR__ . '/../db.php';               // $link を得る
+require_once __DIR__ . '/../lib/build_features.php';
+
+$features = rebuild_features_for_cycle($link, $cycleId);
+// 以降 $features を XGBAPI に送信
+```
+
+### 検証
+
+DB:
+
+- "営業調整日数" キーが `features_json` に存在することを SQL で確認（例コマンドは上記）
+
+コード:
+
+- `git grep` で PDO参照が0件であること
+
+### 将来の拡張
+
+収穫登録（`data_entry/harvest.php`）完了後にも
+`rebuild_features_for_cycle($link, $cycleId)` を呼ぶことで、営業調整日数の反映を即時に行える。
+

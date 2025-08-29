@@ -29,7 +29,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // 特徴量の作成・保存
         $__stage = 'build-features';
         try {
-            $features = rebuild_features_for_cycle($pdo, $cycleId);
+            $features = rebuild_features_for_cycle($link, $cycleId);
         } catch (Throwable $e) {
             $__stage = 'alert-data-missing';
             $payload = encode_json(['cycle_id' => $cycleId]);

@@ -55,7 +55,7 @@ if (
 
     // rebuild features cache with updated sales_adjust_days
     try {
-        rebuild_features_for_cycle($pdo, (int)$_POST['cycle_id']);
+        rebuild_features_for_cycle($link, (int)$_POST['cycle_id']);
     } catch (Throwable $e) {
         // silently ignore for now
     }
