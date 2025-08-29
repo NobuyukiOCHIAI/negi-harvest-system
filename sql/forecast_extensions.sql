@@ -96,8 +96,14 @@ SELECT
 FROM weekly_harvest_forecast_v f
 LEFT JOIN calendar_shipments s ON f.week_start_date = s.week_start_date;
 
+-- Add sales_adjust_days column to cycles
+ALTER TABLE cycles
+  ADD COLUMN sales_adjust_days INT NULL DEFAULT NULL,
+  ADD KEY idx_cycles_sales_adjust_days (sales_adjust_days);
+
 -- Stored procedure for sales adjust days
 DELIMITER $$
+DROP PROCEDURE IF EXISTS sp_update_sales_adjust_days $$
 CREATE PROCEDURE sp_update_sales_adjust_days(IN p_cycle_id INT)
 proc: BEGIN
   DECLARE v_pickup DATE;
@@ -145,4 +151,42 @@ proc: BEGIN
   UPDATE cycles SET sales_adjust_days = DATEDIFF(v_pickup, v_expected)
   WHERE id = p_cycle_id;
 END$$
+DELIMITER ;
+
+DELIMITER $$
+DROP TRIGGER IF EXISTS trg_collections_ai $$
+CREATE TRIGGER trg_collections_ai
+AFTER INSERT ON collections
+FOR EACH ROW
+BEGIN
+  CALL sp_update_sales_adjust_days(NEW.cycle_id);
+END $$
+
+DROP TRIGGER IF EXISTS trg_collections_au $$
+CREATE TRIGGER trg_collections_au
+AFTER UPDATE ON collections
+FOR EACH ROW
+BEGIN
+  CALL sp_update_sales_adjust_days(NEW.cycle_id);
+END $$
+
+DROP PROCEDURE IF EXISTS sp_update_sales_adjust_days_all $$
+CREATE PROCEDURE sp_update_sales_adjust_days_all()
+BEGIN
+  DECLARE done INT DEFAULT 0;
+  DECLARE v_cycle_id INT;
+  DECLARE cur CURSOR FOR
+    SELECT DISTINCT c.id
+    FROM cycles c
+    JOIN collections col ON col.cycle_id = c.id;
+  DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = 1;
+
+  OPEN cur;
+  read_loop: LOOP
+    FETCH cur INTO v_cycle_id;
+    IF done = 1 THEN LEAVE read_loop; END IF;
+    CALL sp_update_sales_adjust_days(v_cycle_id);
+  END LOOP;
+  CLOSE cur;
+END $$
 DELIMITER ;

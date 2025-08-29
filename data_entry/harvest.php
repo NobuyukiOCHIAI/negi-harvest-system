@@ -1,5 +1,6 @@
 <?php
 require_once '../db.php';
+require_once __DIR__ . '/../lib/build_features.php';
 $selected_user_id = $_COOKIE['gf_fc_useit_id'] ?? '';
 if (!$selected_user_id && !empty($_SERVER['HTTP_COOKIE'])) {
     foreach (explode('; ', $_SERVER['HTTP_COOKIE']) as $cookie) {
@@ -42,6 +43,23 @@ if (
     );
     mysqli_stmt_execute($stmt);
     mysqli_stmt_close($stmt);
+
+    // also record collection for sales adjustment trigger
+    $stmt = mysqli_prepare(
+        $link,
+        "INSERT INTO collections (cycle_id, pickup_date, amount_kg) VALUES (?, ?, ?)"
+    );
+    mysqli_stmt_bind_param($stmt, 'isd', $_POST['cycle_id'], $_POST['harvest_date'], $_POST['harvest_kg']);
+    mysqli_stmt_execute($stmt);
+    mysqli_stmt_close($stmt);
+
+    // rebuild features cache with updated sales_adjust_days
+    try {
+        rebuild_features_for_cycle($link, (int)$_POST['cycle_id']);
+    } catch (Throwable $e) {
+        // silently ignore for now
+    }
+
     setcookie('gf_fc_useit_id', $_POST['user_id'], time() + (60 * 60 * 24 * 14), '/');
     $selected_user_id = $_POST['user_id'];
     echo "<div class='alert alert-success text-center m-3'>収穫データを登録しました。</div>";
