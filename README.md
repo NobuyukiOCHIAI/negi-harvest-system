@@ -86,5 +86,39 @@ negi-harvest-system/
 - **harvest_actual_base_v** … 収穫終了日ベースの実績明細（週・月の起点は日曜／月初）
 
 ### expected_harvest の扱い
-- DBには **保存しない**（列追加しない）。必要時は `plant_date + ROUND(pred_days)` を**都度算出**して表示に使用。  
+- DBには **保存しない**（列追加しない）。必要時は `plant_date + ROUND(pred_days)` を**都度算出**して表示に使用。
 - アプリ側（PHP/Python）で `expected_harvest` をオンザフライ計算するのは可（DBへの永続化はしない）。
+
+## Features Cache 再構成フロー（概要）
+
+1. 定植登録（`data_entry/planting.php`）→ 共通ビルダで `features_cache` 生成
+2. 収穫登録（`data_entry/harvest.php`）→ `collections` へ記録 → トリガが `sp_update_sales_adjust_days` 実行 → 共通ビルダで `features_cache` 再生成
+3. `features_cache.features_json` の "営業調整日数" は `cycles.sales_adjust_days` を反映（集荷前は0）
+
+### DB セットアップ
+- `ALTER TABLE cycles ... sales_adjust_days` を適用
+- `sp_update_sales_adjust_days` を作成
+- `trg_collections_ai` / `trg_collections_au` を作成
+- 既存データに対して `CALL sp_update_sales_adjust_days_all();`（必要なら）
+
+### 検証手順
+1. `collections` に対象 `cycle_id` の `pickup_date` を1件追加
+2. 直前時点までの `predictions` が存在することを確認
+3. 収穫登録処理後、`cycles.sales_adjust_days` が更新されたか確認
+4. `rebuild_features_for_cycle($pdo, $cycleId)` により `features_cache` 再生成
+5. SQLで `features_json` に "営業調整日数" が入っていることを確認
+   ```sql
+   SELECT asof,
+          LOCATE('"営業調整日数"', features_json) AS pos,
+          SUBSTRING(features_json, GREATEST(1, LOCATE('"営業調整日数"', features_json)-20), 120) AS snippet
+   FROM features_cache
+   WHERE cycle_id = <TARGET_CYCLE_ID>
+   ORDER BY id DESC
+   LIMIT 5;
+   ```
+
+### ロールバック
+1. `DROP TRIGGER ...` でトリガを無効化
+2. `sp_update_sales_adjust_days` を再作成（または DROP）
+3. `ALTER TABLE cycles DROP COLUMN sales_adjust_days;`
+4. `planting.php` / `harvest.php` で `rebuild_features_for_cycle` 呼び出しをコメントアウト

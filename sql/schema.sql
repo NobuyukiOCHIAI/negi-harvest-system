@@ -24,6 +24,7 @@ DELIMITER $$
 --
 -- プロシージャ
 --
+DROP PROCEDURE IF EXISTS `sp_update_sales_adjust_days`$$
 CREATE PROCEDURE `sp_update_sales_adjust_days`(IN p_cycle_id INT)
 proc: BEGIN
   DECLARE v_pickup DATE;
@@ -31,13 +32,13 @@ proc: BEGIN
   DECLARE v_pred_days DECIMAL(8,3);
   DECLARE v_expected DATE;
 
-  /* 1) 最初の実集荷日 */
+  /* 1) 最初の実集荷日（collections基準。harvestsを使う設計なら読み替え） */
   SELECT MIN(pickup_date) INTO v_pickup
   FROM collections
   WHERE cycle_id = p_cycle_id;
 
   IF v_pickup IS NULL THEN
-    LEAVE proc; -- 集荷が無ければ何もしないで終了
+    LEAVE proc; -- 集荷が無ければ終了
   END IF;
 
   /* 2) 定植日 */
@@ -64,18 +65,54 @@ proc: BEGIN
   END IF;
 
   IF v_pred_days IS NULL THEN
-    LEAVE proc; -- そもそも予測が無い
+    LEAVE proc; -- 予測が無い
   END IF;
 
-  /* 4) 期待収穫日を“オンザフライ”で算出（整数日に丸め） */
+  /* 4) 期待収穫日（四捨五入したpred_daysをインターバルに） */
   SET v_expected = DATE_ADD(v_plant, INTERVAL CAST(ROUND(v_pred_days) AS SIGNED) DAY);
 
-  /* 5) 列がある環境のみ有効化（無ければコメントアウトのまま） */
-  -- UPDATE cycles
-  --   SET sales_adjust_days = DATEDIFF(v_pickup, v_expected)
-  -- WHERE id = p_cycle_id;
+  /* 5) 営業調整日数を更新（初回集荷 - 期待収穫日）*/
+  UPDATE cycles
+     SET sales_adjust_days = DATEDIFF(v_pickup, v_expected)
+   WHERE id = p_cycle_id;
 
 END proc$$
+
+DROP TRIGGER IF EXISTS trg_collections_ai$$
+CREATE TRIGGER trg_collections_ai
+AFTER INSERT ON collections
+FOR EACH ROW
+BEGIN
+  CALL sp_update_sales_adjust_days(NEW.cycle_id);
+END$$
+
+DROP TRIGGER IF EXISTS trg_collections_au$$
+CREATE TRIGGER trg_collections_au
+AFTER UPDATE ON collections
+FOR EACH ROW
+BEGIN
+  CALL sp_update_sales_adjust_days(NEW.cycle_id);
+END$$
+
+DROP PROCEDURE IF EXISTS sp_update_sales_adjust_days_all$$
+CREATE PROCEDURE sp_update_sales_adjust_days_all()
+BEGIN
+  DECLARE done INT DEFAULT 0;
+  DECLARE v_cycle_id INT;
+  DECLARE cur CURSOR FOR
+    SELECT DISTINCT c.id
+    FROM cycles c
+    JOIN collections col ON col.cycle_id = c.id;
+  DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = 1;
+
+  OPEN cur;
+  read_loop: LOOP
+    FETCH cur INTO v_cycle_id;
+    IF done = 1 THEN LEAVE read_loop; END IF;
+    CALL sp_update_sales_adjust_days(v_cycle_id);
+  END LOOP;
+  CLOSE cur;
+END$$
 
 DELIMITER ;
 
@@ -221,9 +258,11 @@ CREATE TABLE IF NOT EXISTS `cycles` (
   `plant_date` date DEFAULT NULL,
   `harvest_start` date DEFAULT NULL,
   `harvest_end` date DEFAULT NULL,
+  `sales_adjust_days` int DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `fk_cycles_bed` (`bed_id`),
-  KEY `idx_cycles_dates` (`plant_date`,`harvest_end`)
+  KEY `idx_cycles_dates` (`plant_date`,`harvest_end`),
+  KEY `idx_cycles_sales_adjust_days` (`sales_adjust_days`)
 ) ENGINE=InnoDB  DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=426 ;
 
 --
