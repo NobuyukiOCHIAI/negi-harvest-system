@@ -121,6 +121,27 @@ Codes: prediction failure 100, feature mismatch 200, invalid API key 300
 Note: JSON uses key `"yield"` (Pydantic uses `yield_ = Field(alias="yield")`).
 備考: JSONでは "yield" キーで返します（Pydantic側は `yield_ = Field(alias="yield")`）。
 
+### Temperature Features (Rolling Std) / 温度特徴量（rolling std 対応）
+- Production DB column `weather_daily.variation` now stores the rolling standard deviation of `temp_avg`.
+  本番DB `weather_daily.variation` は `temp_avg` の移動標準偏差（rolling std）です。
+- Prediction endpoints (`/predict`, `/predict_both`) do not read from the DB; they expect upstream aggregated features as-is.
+  推論API（`/predict`, `/predict_both`）は DB を参照せず、上流で構築された特徴量をそのまま利用します。
+- Temperature-related feature keys used for both training and inference / 学習・推論で使用する温度関連キー:
+  - `気温_平均 = AVG(temp_avg)`
+  - `気温_最大 = MAX(temp_max)`
+  - `気温_最小 = MIN(temp_min)`
+  - `気温_std = STDDEV_POP(temp_avg)`
+  - `気温振れ幅_平均 = AVG(COALESCE(variation, temp_max - temp_min))`
+  - `気温振れ幅_std = STDDEV_POP(COALESCE(variation, temp_max - temp_min))`
+  - If `variation` is `NULL`, fall back to `(temp_max - temp_min)` upstream.
+    `variation` が `NULL` の日は上流処理で `(temp_max - temp_min)` にフォールバックしてください。
+- Required: include `"営業調整日数" = COALESCE(cycles.sales_adjust_days, 0)` in features.
+  必須: 特徴量に `"営業調整日数" = COALESCE(cycles.sales_adjust_days, 0)` を含めてください。
+- Input format: only `{"data":[{"features":{...}}]}` is accepted. Other styles (`records`, `X`, standalone `features`) are unsupported.
+  入力形式は `{"data":[{"features":{...}}]}` のみ受理します。`records` や `X`、単発 `features` などは未対応です。
+- If `feature_order` lacks the keys above, the prediction API responds with an error to surface misconfiguration early.
+  `feature_order` に本節のキーが含まれない場合、設定不備としてエラーを返し早期検知します。
+
 ### CORS
 - Values are read from `.env` (`CORS_ALLOW_*`).
   `.env` から `CORS_ALLOW_*` を読み込んで適用。
