@@ -134,8 +134,8 @@ def compute_and_update_features(cycle_id):
                            MAX(temp_max) AS max_t,
                            MIN(temp_min) AS min_t,
                            STDDEV(temp_avg) AS std_t,
-                           AVG(temp_max - temp_min) AS range_avg,
-                           STDDEV(temp_max - temp_min) AS range_std
+                           AVG(variation) AS range_avg,
+                           STDDEV(variation) AS range_std
                     FROM weather_daily
                     WHERE date BETWEEN %s AND %s
                     """,
