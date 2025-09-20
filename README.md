@@ -11,7 +11,7 @@
    - MySQL 5.5 では `JSON_OBJECT` などの JSON 関数が使えないため、JSON データは PHP 側で組み立ててください
    - `features_cache.features_json` や `alerts.payload_json` は TEXT 型なので、INSERT/UPDATE 前に `api/json_utils.php` の `encode_json` / `decode_json` で構造をチェックしてください
    - `insert_weather_daily.sql` はリポジトリ内の `ondo.xlsx` から気温データを登録します
-2. `.env.example` を `.env` にコピーし `XGB_API_URL` と `XGB_API_KEY` を設定
+2. `.env.example` を `.env` にコピーし `XGB_API_URL`（`http://tk2-118-59530.vs.sakura.ne.jp/xgbapi/api/`）と `XGB_API_KEY` を設定
 3. `db.php` の接続情報を設定
 4. `/data_entry/harvest.php` にブラウザでアクセス
 
@@ -19,6 +19,71 @@
 
 - データベースアクセスには MySQLi を使用し、PDO は使用しないでください。
 - 重要なエラーは `api/logging.php` の `log_error` を使用して `/home/love-media/forc_logs` に記録してください。
+
+## テスト手順
+
+### 推論 API `/predict_both`
+
+- ベース URL: `http://tk2-118-59530.vs.sakura.ne.jp/xgbapi/api/`
+- すべてのリクエストで `X-Api-Key: <.envで設定したAPIキー>` ヘッダーを付与します。
+
+1. **ヘルスチェック**  
+   `GET /health` を送信し、`ok: true` と `feature_order_size`、`model_path_days` などが返ることを確認します。
+
+2. **特徴量メタ情報の取得（任意）**  
+   `GET /feature_meta` で `feature_order` を取得すると、送信すべき特徴量キーを事前確認できます。
+
+3. **推論リクエストの送信**  
+   - メソッド: `POST`
+   - エンドポイント: `/predict_both`
+   - ヘッダー: `Content-Type: application/json` と `X-Api-Key`
+   - ボディ形式: 
+     ```json
+     {
+       "data": [
+         {
+           "features": {
+             "育苗日数": 21,
+             "定植月": 8,
+             "グループ_通常": 1,
+             "気温_平均": 28.3,
+             "気温_最大": 33.1,
+             "気温_最小": 24.9,
+             "気温_std": 2.1,
+             "気温振れ幅_平均": 6.2,
+             "気温振れ幅_std": 1.4,
+             "類似ベッド_平均収量": 120,
+             "類似ベッド_平均日数": 52,
+             "前年同時期収量": 110,
+             "前年同時期日数": 55,
+             "収量差_前年": 10,
+             "日数差_前年": -3,
+             "営業調整日数": 0
+           }
+         }
+       ]
+     }
+     ```
+     `"気温_平均"`、`"気温_最大"`、`"気温_最小"`、`"気温_std"`、`"気温振れ幅_平均"`、`"気温振れ幅_std"`、`"営業調整日数"` は必須です。
+
+4. **レスポンス確認**  
+   `ok: true` と `predictions` 配列に `days`（整数）と `yield`（実数）が含まれること、`request_id` が付与されることを確認します。入力に誤りがある場合は `ok: false` とエラーコードが返るため、メッセージに従って修正してください。
+
+### 特徴量ビルダー単体実行
+
+1. リポジトリルートで PHP CLI を使用し、対象サイクル ID を指定して `build_features_array` を直接呼び出します。
+   ```bash
+   php -r 'require_once "db.php";
+           require_once "lib/build_features.php";
+           $cycleId = <CYCLE_ID>;
+           list($features, $asof) = build_features_array($link, $cycleId);
+           echo json_encode(
+               ["cycle_id"=>$cycleId, "asof"=>$asof, "features"=>$features],
+               JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE
+           ), PHP_EOL;'
+   ```
+
+2. コマンドの標準出力に `features_cache` と同一形式の JSON が表示されることを確認します。必要に応じて `> dump.json` でファイル出力、または `rebuild_features_for_cycle($link, $cycleId)` に置き換えてキャッシュ更新を行ってください。
 
 ## 予測フロー
 
