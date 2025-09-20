@@ -22,8 +22,8 @@ function aggregateTemperature($link, $plantDate, $asof) {
               MAX(temp_max) AS temp_max_max,
               MIN(temp_min) AS temp_min_min,
               STDDEV_POP(temp_avg) AS temp_avg_std,
-              AVG(COALESCE(variation, temp_max-temp_min)) AS swing_avg,
-              STDDEV_POP(COALESCE(variation, temp_max-temp_min)) AS swing_std
+              AVG(variation) AS swing_avg,
+              STDDEV_POP(variation) AS swing_std
             FROM weather_daily
             WHERE date BETWEEN ? AND ?";
     $stmt = mysqli_prepare($link, $sql);

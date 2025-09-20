@@ -37,7 +37,7 @@
    - メソッド: `POST`
    - エンドポイント: `/predict_both`
    - ヘッダー: `Content-Type: application/json` と `X-Api-Key`
-   - ボディ形式: 
+   - ボディ形式:
      ```json
      {
        "data": [
@@ -65,6 +65,7 @@
      }
      ```
      `"気温_平均"`、`"気温_最大"`、`"気温_最小"`、`"気温_std"`、`"気温振れ幅_平均"`、`"気温振れ幅_std"`、`"営業調整日数"` は必須です。
+     気温振れ幅系（`"気温振れ幅_*"`）は `weather_daily.variation`（`temp_avg` の rolling std）を期間平均・標準偏差した値を送信してください。`variation` が `NULL` の日は同じ rolling std ロジックで補完してから投入します。
 
 4. **レスポンス確認**  
    `ok: true` と `predictions` 配列に `days`（整数）と `yield`（実数）が含まれること、`request_id` が付与されることを確認します。入力に誤りがある場合は `ok: false` とエラーコードが返るため、メッセージに従って修正してください。

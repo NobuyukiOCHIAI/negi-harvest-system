@@ -131,10 +131,9 @@ Note: JSON uses key `"yield"` (Pydantic uses `yield_ = Field(alias="yield")`).
   - `気温_最大 = MAX(temp_max)`
   - `気温_最小 = MIN(temp_min)`
   - `気温_std = STDDEV_POP(temp_avg)`
-  - `気温振れ幅_平均 = AVG(COALESCE(variation, temp_max - temp_min))`
-  - `気温振れ幅_std = STDDEV_POP(COALESCE(variation, temp_max - temp_min))`
-  - If `variation` is `NULL`, fall back to `(temp_max - temp_min)` upstream.
-    `variation` が `NULL` の日は上流処理で `(temp_max - temp_min)` にフォールバックしてください。
+  - `気温振れ幅_平均 = AVG(variation)` (`variation` は `temp_avg` の rolling std)
+  - `気温振れ幅_std = STDDEV_POP(variation)`
+  - `variation` が `NULL` の日は、同じ rolling std ロジックで欠損を補完してから投入してください。
 - Required: include `"営業調整日数" = COALESCE(cycles.sales_adjust_days, 0)` in features.
   必須: 特徴量に `"営業調整日数" = COALESCE(cycles.sales_adjust_days, 0)` を含めてください。
 - Input format: only `{"data":[{"features":{...}}]}` is accepted. Other styles (`records`, `X`, standalone `features`) are unsupported.
