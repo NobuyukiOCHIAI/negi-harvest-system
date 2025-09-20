@@ -1,57 +1,51 @@
-# ─────────────────────────────────────────────────────────────
-# File: routes/predict.py
-# Purpose: Prediction endpoints (days & yield) with:
-#          - feature-order alignment (meta / preproc / model)
-#          - optional preprocessing (DataFrame-based)
-#          - backward-compatible single-model /predict
-#          - new dual-model /predict_both (days + yield)
-# ─────────────────────────────────────────────────────────────
-
 from __future__ import annotations
 
-import os
 import json
 import logging
-import traceback
+import os
 from datetime import datetime
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 
-from app import schemas_predict as schemas
 from app.services import feature_shim
 
-# Required
-try:
+try:  # Required to load serialized models
     import joblib
-except Exception as e:
-    raise RuntimeError("joblib is required to load model .pkl files") from e
+except Exception as exc:  # pragma: no cover - import guard
+    raise RuntimeError("joblib is required to load model artifacts") from exc
 
-# Optional (used if preprocessor is present / dict→DataFrame 整形に必要)
-try:
+try:  # Required for array math / rounding
+    import numpy as np
+except Exception as exc:  # pragma: no cover - import guard
+    raise RuntimeError("numpy is required for prediction endpoints") from exc
+
+try:  # Optional: only needed when preprocessing pipeline exists
     import pandas as pd  # type: ignore
-except Exception:  # pragma: no cover
+except Exception:  # pragma: no cover - optional dependency
     pd = None
-
-# Optional (list入力の高速化などに使用)
-try:
-    import numpy as np  # type: ignore
-except Exception:  # pragma: no cover
-    np = None
 
 router = APIRouter()
 log = logging.getLogger("xgbapi.predict")
 
-# ── Environment ──────────────────────────────────────────────
-MODEL_PATH_DAYS = os.getenv("MODEL_PATH_DAYS")     # e.g. /.../model_days.pkl
-MODEL_PATH_YIELD = os.getenv("MODEL_PATH_YIELD")   # e.g. /.../model_yield.pkl
-PREPROC_PATH = os.getenv("PREPROC_PATH")           # e.g. /.../preproc.pkl
-FEATURE_META_PATH = os.getenv("FEATURE_META_PATH") # e.g. /.../feature_meta.json
+MODEL_PATH_DAYS = os.getenv("MODEL_PATH_DAYS")
+MODEL_PATH_YIELD = os.getenv("MODEL_PATH_YIELD")
+PREPROC_PATH = os.getenv("PREPROC_PATH")
+FEATURE_META_PATH = os.getenv("FEATURE_META_PATH")
 
-# ── Artifacts cache ─────────────────────────────────────────
 _ARTIFACTS: Optional[SimpleNamespace] = None
 _SIG: Optional[str] = None
+
+REQUIRED_TEMP_KEYS = [
+    "気温_平均",
+    "気温_最大",
+    "気温_最小",
+    "気温_std",
+    "気温振れ幅_平均",
+    "気温振れ幅_std",
+]
+REQUIRED_OTHER_KEYS = ["営業調整日数"]
 
 
 def _mtime(path: Optional[str]) -> str:
@@ -73,20 +67,18 @@ def _signature() -> str:
     return "|".join(parts)
 
 
-# ── Feature-order helpers ───────────────────────────────────
-def _safe_list(x) -> Optional[List[str]]:
-    if x is None:
+def _safe_list(obj: Any) -> Optional[List[str]]:
+    if obj is None:
         return None
     try:
-        lst = list(x)
-        return [str(v) for v in lst]
+        return [str(v) for v in list(obj)]
     except Exception:
         return None
 
 
 def _load_json(path: str) -> Any:
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    with open(path, "r", encoding="utf-8") as fh:
+        return json.load(fh)
 
 
 def _load_feature_order_from_meta() -> Optional[List[str]]:
@@ -94,7 +86,6 @@ def _load_feature_order_from_meta() -> Optional[List[str]]:
         return None
     try:
         meta = _load_json(FEATURE_META_PATH)
-        # 許容キー：feature_order / feature_names / columns / feature_cols
         for key in ("feature_order", "feature_names", "columns", "feature_cols"):
             arr = _safe_list(meta.get(key))
             if arr and all(isinstance(s, str) for s in arr):
@@ -104,14 +95,12 @@ def _load_feature_order_from_meta() -> Optional[List[str]]:
     return None
 
 
-def _infer_feature_order_from_model(model) -> Optional[List[str]]:
+def _infer_feature_order_from_model(model: Any) -> Optional[List[str]]:
     if model is None:
         return None
-    # sklearn estimators: feature_names_in_
     arr = _safe_list(getattr(model, "feature_names_in_", None))
     if arr and all(isinstance(s, str) for s in arr):
         return arr
-    # xgboost booster
     if hasattr(model, "get_booster"):
         try:
             booster = model.get_booster()
@@ -119,13 +108,11 @@ def _infer_feature_order_from_model(model) -> Optional[List[str]]:
             if arr and all(isinstance(s, str) for s in arr):
                 return arr
         except Exception:
-            pass
+            return None
     return None
 
 
-# ── Artifacts loader ────────────────────────────────────────
 def get_model_and_artifacts() -> SimpleNamespace:
-    """Load/Cache: model_days, model_yield, preproc, feature_order, model paths."""
     global _ARTIFACTS, _SIG
 
     sig = _signature()
@@ -135,30 +122,27 @@ def get_model_and_artifacts() -> SimpleNamespace:
     if not MODEL_PATH_DAYS or not MODEL_PATH_YIELD:
         raise RuntimeError("MODEL_PATH_DAYS and MODEL_PATH_YIELD must be set")
 
-    model_path_days = MODEL_PATH_DAYS
-    model_path_yield = MODEL_PATH_YIELD
+    model_days = joblib.load(MODEL_PATH_DAYS)
+    log.info("[MODEL:days] loaded from %s", MODEL_PATH_DAYS)
 
-    model_days = joblib.load(model_path_days)
-    log.info("[MODEL:days] loaded from %s", model_path_days)
-
-    model_yield = joblib.load(model_path_yield)
-    log.info("[MODEL:yield] loaded from %s", model_path_yield)
+    model_yield = joblib.load(MODEL_PATH_YIELD)
+    log.info("[MODEL:yield] loaded from %s", MODEL_PATH_YIELD)
 
     preproc = None
     if PREPROC_PATH and os.path.isfile(PREPROC_PATH):
         try:
             preproc = joblib.load(PREPROC_PATH)
             log.info("[PREPROC] loaded from %s", PREPROC_PATH)
-        except Exception as e:
-            log.warning("[PREPROC] failed to load from %s: %s", PREPROC_PATH, e)
+        except Exception as exc:
+            log.warning("[PREPROC] failed to load from %s: %s", PREPROC_PATH, exc)
 
-    # 列順の決定：meta → preproc → days → yield
     order = (
         _load_feature_order_from_meta()
         or feature_shim._expected_columns_from_preproc(preproc)
         or _infer_feature_order_from_model(model_days)
         or _infer_feature_order_from_model(model_yield)
     )
+
     src = (
         "meta" if order and FEATURE_META_PATH else
         "preproc" if order and preproc is not None else
@@ -170,8 +154,8 @@ def get_model_and_artifacts() -> SimpleNamespace:
     _ARTIFACTS = SimpleNamespace(
         model_days=model_days,
         model_yield=model_yield,
-        model_path_days=model_path_days,
-        model_path_yield=model_path_yield,
+        model_path_days=MODEL_PATH_DAYS,
+        model_path_yield=MODEL_PATH_YIELD,
         preproc=preproc,
         feature_order=order,
     )
@@ -179,7 +163,6 @@ def get_model_and_artifacts() -> SimpleNamespace:
     return _ARTIFACTS
 
 
-# ── Helpers ────────────────────────────────────────────────
 def _new_rid() -> str:
     return datetime.utcnow().strftime("%Y%m%d%H%M%S%f")[:-2]
 
@@ -195,56 +178,79 @@ def _ensure_rid(request: Request) -> str:
     return rid
 
 
-def _records_to_matrix(items: List[schemas.PredictItem], feature_order: Optional[List[str]]) -> List[List[float]]:
-    """
-    - dict 入力: feature_order に合わせて整列。欠損は 0.0 補完（必要なら np.nan に変更可）
-    - list 入力: 長さチェックのみ（feature_order 未知でも受け入れる）
-    """
-    X: List[List[float]] = []
-
-    any_dict = any(isinstance(it.features, dict) for it in items)
-    if any_dict:
-        if feature_order is None:
-            raise ValueError("Dictionary features require feature_order; set FEATURE_META_PATH or use array inputs")
-        for i, it in enumerate(items):
-            if isinstance(it.features, dict):
-                row_src = it.features
-                row = [float(row_src.get(col, 0.0)) for col in feature_order]
-                X.append(row)
-            elif isinstance(it.features, list):
-                if len(it.features) != len(feature_order):
-                    raise ValueError(f"Feature shape mismatch, expected: {len(feature_order)}, got {len(it.features)} (index={i})")
-                X.append([float(x) for x in it.features])
-            else:
-                raise TypeError(f"Unsupported feature type at index={i}: {type(it.features)}")
-        return X
-
-    # すべて list 入力
-    expected = None
-    for i, it in enumerate(items):
-        if not isinstance(it.features, list):
-            raise ValueError("Mixed features; all list or all dict")
-        if expected is None:
-            expected = len(it.features)
-        elif len(it.features) != expected:
-            raise ValueError(f"Inconsistent feature length at index={i}: got {len(it.features)}, expected {expected}")
-        X.append([float(x) for x in it.features])
-    return X
+def _resolve_feature_order(art: SimpleNamespace) -> List[str]:
+    if art.feature_order:
+        return list(art.feature_order)
+    names = getattr(art.preproc, "feature_names_in_", None)
+    order = _safe_list(names)
+    if order:
+        return order
+    raise RuntimeError("feature_order is empty")
 
 
-def _apply_preproc(X: List[List[float]], feature_order: Optional[List[str]], preproc):
-    """preproc がある場合のみ DataFrame を作って transform"""
+def _apply_preproc(X: List[List[float]], feature_order: List[str], preproc):
     if preproc is None:
-        return X
+        return np.asarray(X, dtype=float)
     if pd is None:
-        raise RuntimeError("pandas not available but PREPROC_PATH is set; install pandas or remove preprocessor")
-    if feature_order is None:
-        raise RuntimeError("feature_order is required to apply preprocessor; provide FEATURE_META_PATH or preproc/model names")
+        raise RuntimeError("pandas is required when a preprocessor is configured")
     df = pd.DataFrame(X, columns=feature_order)
     return preproc.transform(df)
 
 
-# ── Endpoints ──────────────────────────────────────────────
+def _parse_payload(body: Any) -> List[Dict[str, Any]]:
+    if not isinstance(body, dict):
+        raise ValueError("JSON root must be an object")
+    if "records" in body or "X" in body or ("features" in body and not isinstance(body.get("data"), list)):
+        raise ValueError("このAPIは data[*].features のみ対応")
+
+    data = body.get("data")
+    if not isinstance(data, list):
+        raise ValueError("'data' must be a list")
+
+    items: List[Dict[str, Any]] = []
+    for idx, entry in enumerate(data):
+        if not isinstance(entry, dict):
+            raise ValueError(f"data[{idx}] must be an object")
+        if "records" in entry or "X" in entry or ("features" not in entry):
+            raise ValueError("このAPIは data[*].features のみ対応")
+        feats = entry.get("features")
+        if not isinstance(feats, dict):
+            raise ValueError(f"data[{idx}].features must be an object")
+        items.append(feats)
+
+    if not items:
+        raise ValueError("data must not be empty")
+    return items
+
+
+def _assert_required_in_feature_order(feature_order: List[str]) -> None:
+    missing = [
+        key for key in REQUIRED_TEMP_KEYS + REQUIRED_OTHER_KEYS if key not in feature_order
+    ]
+    if missing:
+        raise RuntimeError(f"feature_order missing required keys: {missing}")
+
+
+def _matrix_from_items(items: List[Dict[str, Any]], feature_order: List[str]) -> List[List[float]]:
+    required = set(REQUIRED_TEMP_KEYS + REQUIRED_OTHER_KEYS)
+    matrix: List[List[float]] = []
+    for idx, feats in enumerate(items):
+        row: List[float] = []
+        for col in feature_order:
+            value = feats.get(col, None)
+            if value is None:
+                if col in required:
+                    raise ValueError(f"data[{idx}].features missing required key '{col}'")
+                row.append(0.0)
+                continue
+            try:
+                row.append(float(value))
+            except (TypeError, ValueError):
+                raise ValueError(f"data[{idx}].features['{col}'] must be numeric")
+        matrix.append(row)
+    return matrix
+
+
 def _health_payload(request: Request) -> Dict[str, Any]:
     rid = _ensure_rid(request)
     try:
@@ -274,87 +280,73 @@ async def health(request: Request):
     return _health_payload(request)
 
 
-@router.post("/predict", response_model=schemas.PredictResponse)
-async def predict(req: schemas.PredictRequest, request: Request):
-    """
-    従来互換：単一モデル（days）で推論
-    """
+@router.post("/predict")
+async def predict(request: Request):
     rid = _ensure_rid(request)
-    log.info("/predict called (rid=%s) records=%d", rid, len(req.data))
+    log.info("/predict called (rid=%s)", rid)
 
     try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail={"code": 200, "message": "Invalid JSON payload"})
+
+    try:
+        features = _parse_payload(body)
         art = get_model_and_artifacts()
-        if art.model_days is None:
-            raise RuntimeError("MODEL_PATH_DAYS is not set or days model failed to load.")
-    except Exception as e:
-        log.exception("Model load error (rid=%s)", rid)
-        raise HTTPException(status_code=500, detail={"code": 100, "message": str(e)})
-
-    try:
-        X = _records_to_matrix(req.data, art.feature_order)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail={"code": 200, "message": str(e)})
-
-    try:
-        Xt = _apply_preproc(X, art.feature_order, art.preproc)
-        preds = art.model_days.predict(Xt)
-        try:
-            predictions = [float(x) for x in preds]
-        except Exception:
-            predictions = [float(x) for x in list(preds)]
+        feature_order = _resolve_feature_order(art)
+        _assert_required_in_feature_order(feature_order)
+        X = _matrix_from_items(features, feature_order)
+        Xt = _apply_preproc(X, feature_order, art.preproc)
+        days = np.rint(art.model_days.predict(Xt)).astype(int)
+        predictions = [int(d) for d in days]
         return {
             "ok": True,
             "model_path": art.model_path_days,
             "request_id": rid,
             "predictions": predictions,
         }
-    except Exception as e:
-        tb = traceback.format_exc()
-        log.error("Prediction failed (rid=%s): %s\n%s", rid, e, tb)
-        raise HTTPException(status_code=500, detail={"code": 100, "message": str(e)})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"code": 200, "message": str(exc)})
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail={"code": 100, "message": str(exc)})
+    except Exception:
+        log.exception("predict failed (rid=%s)", rid)
+        raise HTTPException(status_code=500, detail={"code": 900, "message": "internal error"})
 
 
-@router.post("/predict_both", response_model=schemas.PredictBothResponse)
-async def predict_both(req: schemas.PredictBothRequest, request: Request):
-    """
-    同一の特徴量から 日数(days) と 収量(yield) を同時に推論
-    """
+@router.post("/predict_both")
+async def predict_both(request: Request):
     rid = _ensure_rid(request)
-    log.info("/predict_both called (rid=%s) records=%d", rid, len(req.data))
+    log.info("/predict_both called (rid=%s)", rid)
 
     try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail={"code": 200, "message": "Invalid JSON payload"})
+
+    try:
+        features = _parse_payload(body)
         art = get_model_and_artifacts()
-        if art.model_days is None:
-            raise RuntimeError("MODEL_PATH_DAYS is not set or days model failed to load.")
-        if art.model_yield is None:
-            raise RuntimeError("MODEL_PATH_YIELD is not set or yield model failed to load.")
-    except Exception as e:
-        log.exception("Model load error (rid=%s)", rid)
-        raise HTTPException(status_code=500, detail={"code": 100, "message": str(e)})
-
-    try:
-        X = _records_to_matrix(req.data, art.feature_order)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail={"code": 200, "message": str(e)})
-
-    try:
-        Xt = _apply_preproc(X, art.feature_order, art.preproc)
-
-        y_days = art.model_days.predict(Xt)
-        y_yield = art.model_yield.predict(Xt)
-
-        items: List[schemas.PredictBothItem] = []
-        for d, y in zip(y_days, y_yield):
-            items.append(schemas.PredictBothItem(days=float(d), yield_=float(y)))
-
-        return schemas.PredictBothResponse(
-            ok=True,
-            model_path_days=art.model_path_days,
-            model_path_yield=art.model_path_yield,
-            request_id=rid,
-            predictions=items,
-        )
-    except Exception as e:
-        tb = traceback.format_exc()
-        log.error("PredictBoth failed (rid=%s): %s\n%s", rid, e, tb)
-        raise HTTPException(status_code=500, detail={"code": 100, "message": str(e)})
+        feature_order = _resolve_feature_order(art)
+        _assert_required_in_feature_order(feature_order)
+        X = _matrix_from_items(features, feature_order)
+        Xt = _apply_preproc(X, feature_order, art.preproc)
+        days = np.rint(art.model_days.predict(Xt)).astype(int)
+        yields = art.model_yield.predict(Xt)
+        predictions = [
+            {"days": int(d), "yield": float(y)} for d, y in zip(days, yields)
+        ]
+        return {
+            "ok": True,
+            "model_path_days": art.model_path_days,
+            "model_path_yield": art.model_path_yield,
+            "request_id": rid,
+            "predictions": predictions,
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"code": 200, "message": str(exc)})
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail={"code": 100, "message": str(exc)})
+    except Exception:
+        log.exception("predict_both failed (rid=%s)", rid)
+        raise HTTPException(status_code=500, detail={"code": 900, "message": "internal error"})
