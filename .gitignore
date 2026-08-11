@@ -1,0 +1,10 @@
+# Local DB credentials - never commit (plaintext password)
+db.local.php
+
+# Python bytecode cache
+__pycache__/
+*.pyc
+
+# OS / editor
+.DS_Store
+Thumbs.db

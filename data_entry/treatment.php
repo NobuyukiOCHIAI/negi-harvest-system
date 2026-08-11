@@ -1,18 +1,26 @@
 <?php
 require_once '../db.php';
+require_once __DIR__ . '/../lib/nav.php';
 ?>
 <!DOCTYPE html>
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1b7a4a">
   <title>防除・追肥入力</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="../css/mobile-ui.css">
 </head>
-<body class="pb-5">
-<div class="container py-4">
-  <h4 class="mb-4 text-primary">🛠 防除・追肥入力</h4>
+<body>
+<div class="container py-3">
+  <div class="gf-header">
+    <div>
+      <h1 class="page-title">防除・追肥入力</h1>
+      <p class="page-sub">作業結果の記録（任意）</p>
+    </div>
+    <a class="btn btn-sm btn-outline-success" href="../today.php">今日の作業へ</a>
+  </div>
   <form>
     <div class="mb-4">
       <label for="treat_date" class="form-label fs-5">実施日</label>
@@ -25,7 +33,7 @@ require_once '../db.php';
         <?php
         $res = mysqli_query($link, "SELECT id, name FROM beds WHERE active=1 ORDER BY name");
         while ($b = mysqli_fetch_assoc($res)) {
-            echo "<option value='{$b['id']}'>{$b['name']}</option>";
+            echo "<option value='{$b['id']}'>" . htmlspecialchars($b['name'], ENT_QUOTES, 'UTF-8') . '</option>';
         }
         ?>
       </select>
@@ -51,16 +59,6 @@ require_once '../db.php';
     </div>
   </form>
 </div>
-<nav class="navbar fixed-bottom bg-light border-top">
-  <div class="container-fluid">
-    <div class="d-flex justify-content-around w-100">
-      <a href="../index.php" class="text-center nav-link"><div>🏠</div><small>ホーム</small></a>
-      <a href="../monitor.php" class="text-center nav-link"><div>🌱</div><small>栽培状況</small></a>
-      <a href="../inventory.php" class="text-center nav-link"><div>📊</div><small>在庫</small></a>
-      <a href="../plan.php" class="text-center nav-link"><div>📅</div><small>計画</small></a>
-      <a href="../settings.php" class="text-center nav-link"><div>⚙️</div><small>設定</small></a>
-    </div>
-  </div>
-</nav>
+<?php forecast_nav('today', '../'); ?>
 </body>
 </html>

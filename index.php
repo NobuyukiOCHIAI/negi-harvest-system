@@ -1,85 +1,161 @@
 <?php
-// Home Dashboard
+/**
+ * ホーム — 役割別入口（圃場 / 営業）
+ */
+require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/lib/overgrow_metrics.php';
+require_once __DIR__ . '/lib/nav.php';
+require_once __DIR__ . '/lib/date_display.php';
+require_once __DIR__ . '/lib/plant_schedule.php';
+require_once __DIR__ . '/lib/inventory_trust.php';
+require_once __DIR__ . '/lib/supply_ops.php';
+require_once __DIR__ . '/lib/staff_recommend.php';
+
+supply_ensure_full_rotation($link);
+
+$open = open_cycle_progress($link);
+$riskN = count(array_filter($open, static fn($r) => (int)$r['risk'] === 1));
+$harvestDue = 0;
+$today = date('Y-m-d');
+foreach ($open as $op) {
+    if (!empty($op['harvest_start']) || (!empty($op['expected_harvest']) && $op['expected_harvest'] <= $today)) {
+        $harvestDue++;
+    }
+}
+$plantN = 0;
+$chk = mysqli_query($link, "SHOW TABLES LIKE 'plant_schedule'");
+if ($chk && mysqli_num_rows($chk) > 0) {
+    $r = mysqli_query(
+        $link,
+        "SELECT COUNT(*) AS n FROM plant_schedule
+         WHERE status IN ('planned','approved') AND planned_plant_date <= CURDATE()"
+    );
+    if ($r && ($row = mysqli_fetch_assoc($r))) {
+        $plantN = (int)$row['n'];
+    }
+}
+if ($chk) {
+    mysqli_free_result($chk);
+}
+
+$trust = trust_outlook_bundle($link, 16);
+$trustSum = $trust['summary'];
+$autoN = count(staff_auto_recommendations($link));
+$emptyN = count(plant_schedule_empty_beds($link));
+$growing = count(array_filter($open, static fn($o) => empty($o['harvest_start'])));
+$harvesting = count(array_filter($open, static fn($o) => !empty($o['harvest_start'])));
+$trustCls = [
+    'ok' => 'ok',
+    'watch' => 'warn',
+    'warn' => 'warn',
+    'critical' => 'danger',
+][$trustSum['status']] ?? 'warn';
 ?>
 <!DOCTYPE html>
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ホームダッシュボード</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1b7a4a">
+  <title>栽培予測ホーム</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="css/mobile-ui.css">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
-<body class="pb-5">
-<div class="container my-4">
-  <ul class="nav nav-tabs mb-3">
-    <li class="nav-item"><a class="nav-link active" href="#">週別</a></li>
-    <li class="nav-item"><a class="nav-link" href="#">月別</a></li>
-    <li class="nav-item"><a class="nav-link" href="#">年別</a></li>
-  </ul>
-  <h5 class="mb-3">2025-08-04週</h5>
-  <div class="row text-center mb-4">
-    <div class="col-4 mb-3">
-      <div class="border rounded p-2">
-        <small>収穫予定 vs 実績</small>
-        <div class="fs-5">120kg / 110kg</div>
-        <div class="text-success">+10kg</div>
-      </div>
-    </div>
-    <div class="col-4 mb-3">
-      <div class="border rounded p-2">
-        <small>在庫差</small>
-        <div class="fs-5">-8kg</div>
-      </div>
-    </div>
-    <div class="col-4 mb-3">
-      <div class="border rounded p-2">
-        <small>廃棄リスク数</small>
-        <div class="fs-5">2</div>
-      </div>
+<body>
+<div class="container py-3">
+  <div class="gf-header">
+    <div>
+      <h1 class="page-title">GreenFarm 栽培予測</h1>
+      <p class="page-sub"><?= h_month_week(date('Y-m-d')) ?> · 役割別メニュー</p>
     </div>
   </div>
-  <canvas id="harvestChart" class="mb-4"></canvas>
-  <canvas id="inventoryChart" class="mb-4"></canvas>
-  <div class="card">
-    <div class="card-header">アラート</div>
-    <ul class="list-group list-group-flush">
-      <li class="list-group-item">在庫不足：9/1週</li>
-      <li class="list-group-item">廃棄リスク：ベッドA</li>
-      <li class="list-group-item">定植計画未達：2ベッド</li>
-    </ul>
+
+  <div class="job-card mb-3" style="border-left:4px solid <?= $trustSum['status'] === 'ok' ? 'var(--gf-green)' : 'var(--gf-amber)' ?>">
+    <div class="job-meta fw-bold">需給の状態（営業の見るべき一点）</div>
+    <div class="job-meta fw-bold mt-1"><?= htmlspecialchars($trustSum['status_label'], ENT_QUOTES, 'UTF-8') ?></div>
+    <div class="job-meta">
+      累計在庫の割れまで <strong><?= (int)$trustSum['runway_weeks'] ?>週</strong>
+      <?php if ($trustSum['first_break_week']): ?>
+        · 初回 <?= h_sunday_week($trustSum['first_break_week']) ?>
+      <?php endif; ?>
+    </div>
+    <a class="btn btn-sm btn-outline-success mt-2" href="inventory.php">収穫予測で詳しく見る</a>
+  </div>
+
+  <h2 class="section-title"><?= gf_icon('harvest') ?> 圃場スタッフ</h2>
+  <p class="page-sub mb-2">作業結果の入力がメイン。まず「今日の作業」へ。</p>
+  <a href="today.php" class="btn btn-primary btn-cta w-100 mb-2">
+    <?= gf_icon('calendar', 'ico') ?> 今日の作業（リコメンド付き）
+  </a>
+  <div class="stat-row mb-2">
+    <a href="today.php#sec-plant" class="stat-card stat-link <?= $plantN ? 'ok' : '' ?>">
+      <div class="stat-label">定植</div>
+      <div class="stat-value"><?= $plantN ?></div>
+    </a>
+    <a href="today.php#sec-harvest" class="stat-card stat-link <?= $harvestDue ? 'warn' : '' ?>">
+      <div class="stat-label">収穫</div>
+      <div class="stat-value"><?= $harvestDue ?></div>
+    </a>
+    <a href="today.php" class="stat-card stat-link <?= $autoN ? 'danger' : '' ?>">
+      <div class="stat-label">指示</div>
+      <div class="stat-value"><?= $autoN ?></div>
+    </a>
+  </div>
+  <div class="list-group quick-links rounded-3 overflow-hidden shadow-sm mb-4">
+    <a class="list-group-item list-group-item-action" href="data_entry/planting.php"><?= gf_icon('plant', 'ql-ico') ?>定植入力<?= gf_icon('arrow', 'ql-chevron') ?></a>
+    <a class="list-group-item list-group-item-action" href="data_entry/harvest.php"><?= gf_icon('harvest', 'ql-ico') ?>収穫入力<?= gf_icon('arrow', 'ql-chevron') ?></a>
+    <a class="list-group-item list-group-item-action" href="monitor.php"><?= gf_icon('bed', 'ql-ico') ?>栽培モニター<?= gf_icon('arrow', 'ql-chevron') ?></a>
+  </div>
+
+  <h2 class="section-title"><?= gf_icon('chart') ?> 営業・管理</h2>
+  <p class="page-sub mb-2">常時フル稼働がデフォルト。一時余剰はスポット、数か月トレンドのみベース交渉（減少を優先）。</p>
+  <div class="stat-row mb-2">
+    <a href="inventory.php" class="stat-card stat-link <?= $trustCls ?>">
+      <div class="stat-label">割れまで</div>
+      <div class="stat-value"><?= (int)$trustSum['runway_weeks'] ?></div>
+      <div class="stat-sub">週</div>
+    </a>
+    <a href="capacity.php" class="stat-card stat-link">
+      <div class="stat-label">空きベッド</div>
+      <div class="stat-value"><?= $emptyN ?></div>
+    </a>
+    <a href="overgrow.php" class="stat-card stat-link <?= $riskN ? 'danger' : '' ?>">
+      <div class="stat-label">過栽培</div>
+      <div class="stat-value"><?= $riskN ?></div>
+    </a>
+  </div>
+  <div class="list-group quick-links rounded-3 overflow-hidden shadow-sm mb-3">
+    <a class="list-group-item list-group-item-action" href="inventory.php"><?= gf_icon('chart', 'ql-ico') ?>① 収穫予測（累計在庫・信頼の核）<?= gf_icon('arrow', 'ql-chevron') ?></a>
+    <a class="list-group-item list-group-item-action" href="capacity.php"><?= gf_icon('chart', 'ql-ico') ?>② 需給・営業（トレンド/一時アラート）<?= gf_icon('arrow', 'ql-chevron') ?></a>
+    <a class="list-group-item list-group-item-action" href="agent.php"><?= gf_icon('alert', 'ql-ico') ?>監視エージェント<?= gf_icon('arrow', 'ql-chevron') ?></a>
+    <a class="list-group-item list-group-item-action" href="plan.php"><?= gf_icon('calendar', 'ql-ico') ?>③ 定植計画（常時回転は自動）<?= gf_icon('arrow', 'ql-chevron') ?></a>
+    <a class="list-group-item list-group-item-action" href="loss.php"><?= gf_icon('chart', 'ql-ico') ?>ロス分析（収穫−実出荷）<?= gf_icon('arrow', 'ql-chevron') ?></a>
+    <a class="list-group-item list-group-item-action" href="actual.php"><?= gf_icon('harvest', 'ql-ico') ?>実収穫量（昨対）<?= gf_icon('arrow', 'ql-chevron') ?></a>
+  </div>
+
+  <div class="chart-card">
+    <div class="chart-title">未完了ベッドの状態</div>
+    <div class="chart-wrap doughnut">
+      <canvas id="homeStatus"></canvas>
+    </div>
   </div>
 </div>
-<nav class="navbar fixed-bottom bg-light border-top">
-  <div class="container-fluid">
-    <div class="d-flex justify-content-around w-100">
-      <a href="index.php" class="text-center nav-link active"><div>🏠</div><small>ホーム</small></a>
-      <a href="monitor.php" class="text-center nav-link"><div>🌱</div><small>栽培状況</small></a>
-      <a href="inventory.php" class="text-center nav-link"><div>📊</div><small>在庫</small></a>
-      <a href="plan.php" class="text-center nav-link"><div>📅</div><small>計画</small></a>
-      <a href="settings.php" class="text-center nav-link"><div>⚙️</div><small>設定</small></a>
-    </div>
-  </div>
-</nav>
+<?php forecast_nav(''); ?>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script>
-const ctx1 = document.getElementById('harvestChart');
-new Chart(ctx1, {
-  type: 'bar',
+new Chart(document.getElementById('homeStatus'), {
+  type: 'doughnut',
   data: {
-    labels: ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'],
-    datasets: [
-      {label: '予定', data: [20,20,20,20,20,10,10], backgroundColor:'rgba(54,162,235,0.5)'},
-      {label: '実績', data: [18,22,19,17,25,8,12], backgroundColor:'rgba(75,192,192,0.5)'}
-    ]
-  }
-});
-const ctx2 = document.getElementById('inventoryChart');
-new Chart(ctx2, {
-  type: 'line',
-  data: {
-    labels: ['先週','今週','来週'],
-    datasets: [{label:'在庫差', data:[-5,10,-8], borderColor:'rgb(255,99,132)', tension:0.3}]
+    labels: ['栽培中', '収穫中', '過栽培候補'],
+    datasets: [{
+      data: [<?= $growing ?>, <?= $harvesting ?>, <?= $riskN ?>],
+      backgroundColor: ['#1b7a4a', '#c47a00', '#c62828'],
+      borderWidth: 0
+    }]
+  },
+  options: {
+    plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 11 } } } },
+    cutout: '60%'
   }
 });
 </script>

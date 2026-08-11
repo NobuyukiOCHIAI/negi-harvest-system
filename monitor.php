@@ -1,41 +1,63 @@
 <?php
-require_once 'db.php';
+/**
+ * 栽培状況モニター（ベッドボード + カレンダー）— モバイル優先
+ */
+require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/lib/overgrow_metrics.php';
+require_once __DIR__ . '/lib/date_display.php';
+require_once __DIR__ . '/lib/nav.php';
 
 $group = $_GET['group'] ?? '';
 $statusFilter = $_GET['status'] ?? '';
-$today = date('Y-m-d');
+
+$openByBed = [];
+foreach (open_cycle_progress($link) as $op) {
+    $openByBed[$op['bed_name']] = $op;
+}
 
 $beds = [];
-$bedSql = "SELECT id, name, group_type FROM beds";
-if ($group && $group !== '') {
+$bedSql = "SELECT id, name, group_type FROM beds WHERE active = 1";
+if ($group !== '') {
     $grp = mysqli_real_escape_string($link, $group);
-    $bedSql .= " WHERE group_type='{$grp}'";
+    $bedSql .= " AND group_type='{$grp}'";
 }
-$bedSql .= ' ORDER BY name';
+$bedSql .= ' ORDER BY group_type ASC, name ASC';
 $bedRes = mysqli_query($link, $bedSql);
 if ($bedRes) {
     while ($b = mysqli_fetch_assoc($bedRes)) {
-        $cycleRes = mysqli_query($link, "SELECT * FROM cycles WHERE bed_id={$b['id']} ORDER BY id DESC LIMIT 1");
+        $cycleRes = mysqli_query(
+            $link,
+            "SELECT * FROM cycles WHERE bed_id=" . (int)$b['id'] . " ORDER BY plant_date DESC, id DESC LIMIT 1"
+        );
         $cycle = $cycleRes ? mysqli_fetch_assoc($cycleRes) : null;
+        if ($cycleRes) {
+            mysqli_free_result($cycleRes);
+        }
         $bedStatus = 'empty';
         if ($cycle) {
-            if (!empty($cycle['harvest_start']) && !empty($cycle['harvest_end']) && $today >= $cycle['harvest_start'] && $today <= $cycle['harvest_end']) {
+            if ($cycle['harvest_end'] !== null) {
+                $bedStatus = 'empty';
+            } elseif ($cycle['harvest_start'] !== null) {
                 $bedStatus = 'harvesting';
-            } elseif (!empty($cycle['plant_date']) && $today >= $cycle['plant_date'] && ($cycle['harvest_start'] === null || $today < $cycle['harvest_start'])) {
+            } elseif ($cycle['plant_date'] !== null) {
                 $bedStatus = 'growing';
             }
         }
-        if ($statusFilter && $statusFilter !== $bedStatus) {
+        if ($statusFilter !== '' && $statusFilter !== $bedStatus) {
             continue;
         }
         $b['cycle'] = $cycle;
+        $b['status'] = $bedStatus;
+        $b['progress'] = $openByBed[$b['name']] ?? null;
         $beds[] = $b;
     }
 }
 
 function week_status($cycle, $weekStart) {
     $weekEnd = strtotime('+6 day', $weekStart);
-    if (!$cycle) return ['', ''];
+    if (!$cycle) {
+        return ['', ''];
+    }
     $plant = $cycle['plant_date'] ? strtotime($cycle['plant_date']) : null;
     $harvestStart = $cycle['harvest_start'] ? strtotime($cycle['harvest_start']) : null;
     $harvestEnd = $cycle['harvest_end'] ? strtotime($cycle['harvest_end']) : null;
@@ -46,162 +68,192 @@ function week_status($cycle, $weekStart) {
     if ($harvestStart && $harvestEnd && $harvestStart <= $weekEnd && $harvestEnd >= $weekStart) {
         return ['bg-warning', '収穫'];
     }
+    if ($harvestStart && !$harvestEnd && $harvestStart <= $weekEnd && $weekStart <= time()) {
+        return ['bg-warning', '収穫中'];
+    }
     if ($plant && $weekStart >= $plant && (!$harvestStart || $weekEnd < $harvestStart)) {
         return ['bg-success text-white', '栽培'];
     }
     return ['', ''];
 }
 
+$statusLabel = [
+    'empty' => '空き',
+    'growing' => '栽培中',
+    'harvesting' => '収穫中',
+];
+
 $weekStart = strtotime('monday this week');
 $weekLabels = [];
 for ($i = 0; $i < 7; $i++) {
-    $weekLabels[] = date('n/j', strtotime("+$i week", $weekStart));
+    $wsYmd = date('Y-m-d', strtotime("+$i week", $weekStart));
+    $weekLabels[] = format_month_week($wsYmd);
 }
 
-$harvestLabels = [];
-$harvestActual = [];
-$res = mysqli_query($link, "SELECT DATE_FORMAT(harvest_date,'%Y-%u') AS wk, SUM(harvest_kg) AS total FROM harvests GROUP BY wk ORDER BY wk DESC LIMIT 7");
-if ($res) {
-    while ($row = mysqli_fetch_assoc($res)) {
-        $harvestLabels[] = $row['wk'];
-        $harvestActual[] = (float)$row['total'];
-    }
+$openProgress = open_cycle_progress($link);
+if ($group !== '') {
+    $openProgress = array_values(array_filter(
+        $openProgress,
+        static fn($r) => $r['group_type'] === $group
+    ));
 }
-$harvestLabels = array_reverse($harvestLabels);
-$harvestActual = array_reverse($harvestActual);
-$forecastData = array_map(fn($v) => round($v * 1.1, 1), $harvestActual);
-if (!$harvestLabels) {
-    $harvestLabels = ['1週', '2週', '3週', '4週'];
-    $harvestActual = [0, 0, 0, 0];
-    $forecastData = [0, 0, 0, 0];
-}
-
-$dayLabels = [];
-$dayData = [];
-$dRes = mysqli_query($link, "SELECT DATE_FORMAT(harvest_start,'%Y-%u') AS wk, AVG(DATEDIFF(harvest_start, plant_date)) AS avg_days FROM cycles WHERE harvest_start IS NOT NULL GROUP BY wk ORDER BY wk DESC LIMIT 7");
-if ($dRes) {
-    while ($row = mysqli_fetch_assoc($dRes)) {
-        $dayLabels[] = $row['wk'];
-        $dayData[] = (float)$row['avg_days'];
-    }
-}
-$dayLabels = array_reverse($dayLabels);
-$dayData = array_reverse($dayData);
-if (!$dayLabels) {
-    $dayLabels = ['1週', '2週', '3週', '4週'];
-    $dayData = [30, 28, 27, 29];
+$openRiskN = count(array_filter($openProgress, static fn($r) => $r['risk'] === 1));
+$counts = ['empty' => 0, 'growing' => 0, 'harvesting' => 0];
+foreach ($beds as $bb) {
+    $counts[$bb['status']] = ($counts[$bb['status']] ?? 0) + 1;
 }
 ?>
 <!DOCTYPE html>
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1b7a4a">
   <title>栽培状況モニター</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="css/mobile-ui.css">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
-<body class="pb-5">
-<div class="container my-4">
-  <h4 class="mb-3 text-primary">🌱 栽培状況モニター</h4>
-  <form method="get" class="row mb-3">
+<body>
+<div class="container py-3">
+  <div class="gf-header">
+    <div>
+      <h1 class="page-title">栽培モニター</h1>
+      <p class="page-sub">ベッド状態 · 予測 · 過栽培</p>
+    </div>
+    <div class="actions">
+      <a href="overgrow.php" class="btn btn-sm btn-outline-warning">過栽培</a>
+    </div>
+  </div>
+
+  <form method="get" class="row g-2 mb-3">
     <div class="col-6">
-      <label class="form-label">ベッド区分</label>
       <select name="group" class="form-select" onchange="this.form.submit()">
-        <option value=""<?= $group === '' ? ' selected' : '' ?>>全体</option>
+        <option value=""<?= $group === '' ? ' selected' : '' ?>>区分: 全体</option>
         <option value="通常"<?= $group === '通常' ? ' selected' : '' ?>>通常</option>
         <option value="別宅"<?= $group === '別宅' ? ' selected' : '' ?>>別宅</option>
       </select>
     </div>
     <div class="col-6">
-      <label class="form-label">状態</label>
       <select name="status" class="form-select" onchange="this.form.submit()">
-        <option value=""<?= $statusFilter === '' ? ' selected' : '' ?>>全体</option>
+        <option value=""<?= $statusFilter === '' ? ' selected' : '' ?>>状態: 全体</option>
         <option value="growing"<?= $statusFilter === 'growing' ? ' selected' : '' ?>>栽培中</option>
         <option value="harvesting"<?= $statusFilter === 'harvesting' ? ' selected' : '' ?>>収穫中</option>
         <option value="empty"<?= $statusFilter === 'empty' ? ' selected' : '' ?>>空き</option>
       </select>
     </div>
   </form>
-  <ul class="nav nav-tabs mb-3">
-    <li class="nav-item"><a class="nav-link active" href="#">週別</a></li>
-    <li class="nav-item"><a class="nav-link" href="#">月別</a></li>
-    <li class="nav-item"><a class="nav-link" href="#">年別</a></li>
-  </ul>
-  <div class="mb-4">
-    <h6>栽培カレンダー</h6>
-    <div class="table-responsive" style="max-height:400px;">
-      <table class="table table-bordered text-center small align-middle">
-        <thead class="table-light">
-          <tr>
-            <th class="text-nowrap">ベッド\\週</th>
-            <?php foreach ($weekLabels as $wl): ?>
-              <th><?= htmlspecialchars($wl, ENT_QUOTES, 'UTF-8') ?></th>
-            <?php endforeach; ?>
-          </tr>
-        </thead>
-        <tbody>
-          <?php foreach ($beds as $bed): ?>
-            <tr>
-              <th class="text-nowrap"><?= htmlspecialchars($bed['name'], ENT_QUOTES, 'UTF-8') ?></th>
-              <?php for ($i = 0; $i < 7; $i++): $ws = strtotime("+$i week", $weekStart); [$cls, $label] = week_status($bed['cycle'], $ws); ?>
-                <td class="<?= $cls ?>"><?= $label ?></td>
-              <?php endfor; ?>
-            </tr>
+
+  <div class="stat-row">
+    <div class="stat-card ok">
+      <?= gf_icon('plant', 'stat-ico') ?>
+      <div class="stat-label">栽培中</div>
+      <div class="stat-value"><?= (int)$counts['growing'] ?></div>
+    </div>
+    <div class="stat-card warn">
+      <?= gf_icon('harvest', 'stat-ico') ?>
+      <div class="stat-label">収穫中</div>
+      <div class="stat-value"><?= (int)$counts['harvesting'] ?></div>
+    </div>
+    <div class="stat-card <?= $openRiskN ? 'danger' : '' ?>">
+      <?= gf_icon('alert', 'stat-ico') ?>
+      <div class="stat-label">過栽培</div>
+      <div class="stat-value"><?= (int)$openRiskN ?></div>
+    </div>
+  </div>
+
+  <div class="chart-card">
+    <div class="chart-title">ベッド状態の内訳</div>
+    <div class="chart-wrap doughnut"><canvas id="monStatus"></canvas></div>
+  </div>
+
+  <h2 class="section-title"><?= gf_icon('bed') ?> ベッドボード</h2>
+  <div class="row g-2 mb-4">
+    <?php foreach ($beds as $bed):
+      $st = $bed['status'];
+      $prog = $bed['progress'];
+      $cycle = $bed['cycle'];
+      $href = ($st !== 'empty' && $cycle)
+        ? 'cycle.php?id=' . (int)$cycle['id']
+        : 'data_entry/planting.php?bed_id=' . (int)$bed['id'];
+      ?>
+      <div class="col-6 col-md-4">
+        <a href="<?= htmlspecialchars($href, ENT_QUOTES, 'UTF-8') ?>" class="bed-tile <?= ($prog && $prog['risk']) ? 'risk' : '' ?>">
+          <div class="d-flex justify-content-between">
+            <span class="bed-name"><?= htmlspecialchars($bed['name'], ENT_QUOTES, 'UTF-8') ?></span>
+            <span class="badge-status <?= htmlspecialchars($st, ENT_QUOTES, 'UTF-8') ?>"><?= $statusLabel[$st] ?></span>
+          </div>
+          <div class="bed-line"><?= htmlspecialchars($bed['group_type'], ENT_QUOTES, 'UTF-8') ?></div>
+          <?php if ($st === 'empty'): ?>
+            <div class="bed-line mt-2">定植可</div>
+          <?php else: ?>
+            <div class="bed-line">定植 <?= h_month_week($cycle['plant_date'] ?? null) ?></div>
+            <div class="bed-line">予測 <?= h_month_week($prog['expected_harvest'] ?? null) ?></div>
+            <div class="bed-kg">
+              <?php
+              $kg = $prog['postproc_yield'] ?? $prog['pred_yield'] ?? null;
+              echo $kg !== null ? htmlspecialchars((string)round((float)$kg), ENT_QUOTES, 'UTF-8') . 'kg' : '—';
+              ?>
+            </div>
+            <?php if ($prog): ?>
+              <div class="bed-line <?= $prog['risk'] ? 'text-danger fw-bold' : '' ?>">
+                <?= htmlspecialchars($prog['buffer_label'], ENT_QUOTES, 'UTF-8') ?>
+              </div>
+            <?php endif; ?>
+          <?php endif; ?>
+        </a>
+      </div>
+    <?php endforeach; ?>
+    <?php if (!$beds): ?>
+      <div class="col-12"><p class="text-muted small">条件に合うベッドがありません。</p></div>
+    <?php endif; ?>
+  </div>
+
+  <h2 class="section-title"><?= gf_icon('calendar') ?> 7週カレンダー</h2>
+  <div class="table-responsive mb-3" style="max-height:320px;">
+    <table class="table table-bordered text-center small align-middle mb-0">
+      <thead>
+        <tr>
+          <th>ベッド</th>
+          <?php foreach ($weekLabels as $wl): ?>
+            <th><?= htmlspecialchars($wl, ENT_QUOTES, 'UTF-8') ?></th>
           <?php endforeach; ?>
-        </tbody>
-      </table>
-    </div>
-  </div>
-  <canvas id="harvestTrend" class="mb-4"></canvas>
-  <canvas id="dayTrend" class="mb-4"></canvas>
-  <div class="card mb-3">
-    <div class="card-header">詳細</div>
-    <div class="card-body">
-      <p>温度推移や予測収量を表示します。</p>
-    </div>
-  </div>
-  <div class="card">
-    <div class="card-header">防除・追肥</div>
-    <ul class="list-group list-group-flush">
-      <li class="list-group-item">8/1 防除：薬剤A</li>
-      <li class="list-group-item">8/3 追肥：液肥B</li>
-    </ul>
+        </tr>
+      </thead>
+      <tbody>
+        <?php foreach ($beds as $bed): ?>
+          <tr>
+            <th class="text-nowrap">
+              <?php if ($bed['status'] !== 'empty' && $bed['cycle']): ?>
+                <a href="cycle.php?id=<?= (int)$bed['cycle']['id'] ?>"><?= htmlspecialchars($bed['name'], ENT_QUOTES, 'UTF-8') ?></a>
+              <?php else: ?>
+                <?= htmlspecialchars($bed['name'], ENT_QUOTES, 'UTF-8') ?>
+              <?php endif; ?>
+            </th>
+            <?php for ($i = 0; $i < 7; $i++): $ws = strtotime("+$i week", $weekStart); [$cls, $label] = week_status($bed['cycle'], $ws); ?>
+              <td class="<?= $cls ?>"><?= $label ?></td>
+            <?php endfor; ?>
+          </tr>
+        <?php endforeach; ?>
+      </tbody>
+    </table>
   </div>
 </div>
-<nav class="navbar fixed-bottom bg-light border-top">
-  <div class="container-fluid">
-    <div class="d-flex justify-content-around w-100">
-      <a href="index.php" class="text-center nav-link"><div>🏠</div><small>ホーム</small></a>
-      <a href="monitor.php" class="text-center nav-link active"><div>🌱</div><small>栽培状況</small></a>
-      <a href="inventory.php" class="text-center nav-link"><div>📊</div><small>在庫</small></a>
-      <a href="plan.php" class="text-center nav-link"><div>📅</div><small>計画</small></a>
-      <a href="settings.php" class="text-center nav-link"><div>⚙️</div><small>設定</small></a>
-    </div>
-  </div>
-</nav>
+<?php forecast_nav('monitor'); ?>
 <script>
-const harvestLabels = <?= json_encode($harvestLabels, JSON_UNESCAPED_UNICODE) ?>;
-const actualData = <?= json_encode($harvestActual, JSON_NUMERIC_CHECK) ?>;
-const forecastData = <?= json_encode($forecastData, JSON_NUMERIC_CHECK) ?>;
-new Chart(document.getElementById('harvestTrend'), {
-  type: 'bar',
+new Chart(document.getElementById('monStatus'), {
+  type: 'doughnut',
   data: {
-    labels: harvestLabels,
-    datasets: [
-      {label: '実績', data: actualData, backgroundColor: 'rgba(75,192,192,0.5)'},
-      {label: '予測', data: forecastData, backgroundColor: 'rgba(54,162,235,0.5)'}
-    ]
-  }
-});
-const dayLabels = <?= json_encode($dayLabels, JSON_UNESCAPED_UNICODE) ?>;
-const dayData = <?= json_encode($dayData, JSON_NUMERIC_CHECK) ?>;
-new Chart(document.getElementById('dayTrend'), {
-  type: 'line',
-  data: {
-    labels: dayLabels,
-    datasets: [{label: '平均生育日数', data: dayData, borderColor: 'orange'}]
+    labels: ['栽培中', '収穫中', '空き'],
+    datasets: [{
+      data: [<?= (int)$counts['growing'] ?>, <?= (int)$counts['harvesting'] ?>, <?= (int)$counts['empty'] ?>],
+      backgroundColor: ['#1b7a4a', '#c47a00', '#9aa59e'],
+      borderWidth: 0
+    }]
+  },
+  options: {
+    plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 11 } } } },
+    cutout: '58%'
   }
 });
 </script>

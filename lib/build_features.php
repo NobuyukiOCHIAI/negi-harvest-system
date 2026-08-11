@@ -36,37 +36,86 @@ function aggregateTemperature($link, $plantDate, $asof) {
     return $row ?: [];
 }
 
-function findRecentPeerStats($link, $groupType) {
-    foreach ([5,10,14] as $win) {
-        foreach ([1,0] as $strict) {
-            $sql = "SELECT
-                      AVG(t.total_yield) AS peer_mean_total,
-                      AVG(t.days_to_first) AS peer_mean_days,
-                      COUNT(*) AS k
-                    FROM (
-                      SELECT c2.id,
-                             DATEDIFF(c2.harvest_start, c2.plant_date) AS days_to_first,
-                             (SELECT SUM(h.harvest_kg) FROM harvests h WHERE h.cycle_id=c2.id) AS total_yield
-                      FROM cycles c2 JOIN beds b2 ON c2.bed_id=b2.id
-                      WHERE c2.harvest_end BETWEEN DATE_SUB(CURDATE(), INTERVAL ? DAY) AND CURDATE()
-                        AND (? = 0 OR b2.group_type = ?)
-                    ) t";
-            $stmt = mysqli_prepare($link, $sql);
-            mysqli_stmt_bind_param($stmt, 'iis', $win, $strict, $groupType);
-            mysqli_stmt_execute($stmt);
-            $res = mysqli_stmt_get_result($stmt);
-            $row = mysqli_fetch_assoc($res);
-            mysqli_free_result($res);
-            mysqli_stmt_close($stmt);
-            if ($row && (int)$row['k'] >= 1) {
-                return [
-                    'peer_mean_total' => (float)$row['peer_mean_total'],
-                    'peer_mean_days'  => (float)$row['peer_mean_days'],
-                    'k' => (int)$row['k']
-                ];
+/**
+ * 直近完了ピア（③）。
+ * - harvest_end が asof 基準の直近窓（5→10→14、足りなければ拡大）
+ * - 定植 DOY ±14（同季節）。年跨ぎは円環距離
+ * CURDATE() 固定禁止（学習・再予測と揃える）。
+ */
+function findRecentPeerStats($link, $groupType, $asof, $plantDate) {
+    $doyClause = "LEAST(
+                    ABS(DAYOFYEAR(c2.plant_date) - DAYOFYEAR(?)),
+                    365 - ABS(DAYOFYEAR(c2.plant_date) - DAYOFYEAR(?))
+                  ) <= 14";
+
+    $queryPeers = function ($win, $strict, $useDoy) use ($link, $groupType, $asof, $plantDate, $doyClause) {
+        $sql = "SELECT
+                  AVG(t.total_yield) AS peer_mean_total,
+                  AVG(t.days_to_first) AS peer_mean_days,
+                  COUNT(*) AS k
+                FROM (
+                  SELECT c2.id,
+                         DATEDIFF(c2.harvest_start, c2.plant_date) AS days_to_first,
+                         (SELECT SUM(h.harvest_kg) FROM harvests h WHERE h.cycle_id=c2.id) AS total_yield
+                  FROM cycles c2 JOIN beds b2 ON c2.bed_id=b2.id
+                  WHERE c2.harvest_end BETWEEN DATE_SUB(?, INTERVAL ? DAY) AND ?
+                    AND c2.harvest_start IS NOT NULL
+                    AND (? = 0 OR b2.group_type = ?)";
+        if ($useDoy) {
+            $sql .= " AND " . $doyClause;
+        }
+        $sql .= "
+                ) t";
+        $stmt = mysqli_prepare($link, $sql);
+        if ($useDoy) {
+            // asof, win, asof, strict, group, plantDate, plantDate
+            mysqli_stmt_bind_param(
+                $stmt,
+                'sisisss',
+                $asof,
+                $win,
+                $asof,
+                $strict,
+                $groupType,
+                $plantDate,
+                $plantDate
+            );
+        } else {
+            mysqli_stmt_bind_param($stmt, 'sisis', $asof, $win, $asof, $strict, $groupType);
+        }
+        mysqli_stmt_execute($stmt);
+        $res = mysqli_stmt_get_result($stmt);
+        $row = mysqli_fetch_assoc($res);
+        mysqli_free_result($res);
+        mysqli_stmt_close($stmt);
+        if ($row && (int)$row['k'] >= 1) {
+            return [
+                'peer_mean_total' => (float)$row['peer_mean_total'],
+                'peer_mean_days'  => (float)$row['peer_mean_days'],
+                'k' => (int)$row['k']
+            ];
+        }
+        return null;
+    };
+
+    foreach ([5, 10, 14] as $win) {
+        foreach ([1, 0] as $strict) {
+            $hit = $queryPeers($win, $strict, true);
+            if ($hit) {
+                return $hit;
             }
         }
     }
+    // 同季節の直近が薄いとき: 窓だけ拡大（DOY条件は維持）
+    foreach ([30, 60, 120, 365] as $win) {
+        foreach ([1, 0] as $strict) {
+            $hit = $queryPeers($win, $strict, true);
+            if ($hit) {
+                return $hit;
+            }
+        }
+    }
+    // 最終フォールバック: 季節なしの全完了平均
     $sql = "SELECT
               AVG(t.total_yield) AS peer_mean_total,
               AVG(t.days_to_first) AS peer_mean_days,
@@ -152,7 +201,6 @@ function build_features_array($link, $cycleId, $asofDate = null) {
     if (!$asof) { throw new RuntimeException('asof not found'); }
 
     $sql = "SELECT c.id, c.bed_id, c.sow_date, c.plant_date, c.harvest_start, c.harvest_end,
-                   COALESCE(c.sales_adjust_days,0) AS sales_adjust_days,
                    b.group_type
             FROM cycles c
             JOIN beds b ON b.id = c.bed_id
@@ -175,7 +223,7 @@ function build_features_array($link, $cycleId, $asofDate = null) {
     $temp = aggregateTemperature($link, $plantDate, $asof);
     if (($temp['temp_avg_mean'] ?? null) === null) { throw new RuntimeException('temperature data missing'); }
 
-    $peer = findRecentPeerStats($link, $groupType);
+    $peer = findRecentPeerStats($link, $groupType, $asof, $plantDate);
     $yoy  = findYOY($link, $bedId, $plantDate, $groupType);
     if (($yoy['k'] ?? 0) === 0) {
         $yoy['yoy_mean_total'] = $peer['peer_mean_total'];
@@ -187,22 +235,22 @@ function build_features_array($link, $cycleId, $asofDate = null) {
     $groupNormal = ($groupType === 'normal' || $groupType === '通常') ? 1 : 0;
 
     $features = [
-        '育苗日数'         => $nurseryDays,
-        '定植月'           => $plantMonth,
-        'グループ_通常'     => $groupNormal,
-        '気温_平均'        => (float)$temp['temp_avg_mean'],
-        '気温_最大'        => (float)$temp['temp_max_max'],
-        '気温_最小'        => (float)$temp['temp_min_min'],
-        '気温_std'         => (float)$temp['temp_avg_std'],
-        '気温振れ幅_平均'  => (float)$temp['swing_avg'],
-        '気温振れ幅_std'   => (float)$temp['swing_std'],
+        '育苗日数'            => $nurseryDays,
+        '定植月'              => $plantMonth,
+        'グループ_通常'        => $groupNormal,
+        '気温_平均'           => (float)$temp['temp_avg_mean'],
+        '気温_最大'           => (float)$temp['temp_max_max'],
+        '気温_最小'           => (float)$temp['temp_min_min'],
+        '気温_std'            => (float)$temp['temp_avg_std'],
+        '気温振れ幅_平均'     => (float)$temp['swing_avg'],
+        '気温振れ幅_std'      => (float)$temp['swing_std'],
         '類似ベッド_平均収量' => (float)$peer['peer_mean_total'],
         '類似ベッド_平均日数' => (float)$peer['peer_mean_days'],
-        '前年同時期収量'   => (float)$yoy['yoy_mean_total'],
-        '前年同時期日数'   => (float)$yoy['yoy_mean_days'],
-        '収量差_前年'       => (float)$peer['peer_mean_total'] - (float)$yoy['yoy_mean_total'],
-        '日数差_前年'       => (float)$peer['peer_mean_days'] - (float)$yoy['yoy_mean_days'],
-        '営業調整日数'      => (int)$c['sales_adjust_days'],
+        '前年同時期収量'      => (float)$yoy['yoy_mean_total'],
+        '前年同時期日数'      => (float)$yoy['yoy_mean_days'],
+        // 類似 − 前年（実測ターゲットは使わない / 特徴量仕様_v2）
+        '類似対前年_収量差'   => (float)$peer['peer_mean_total'] - (float)$yoy['yoy_mean_total'],
+        '類似対前年_日数差'   => (float)$peer['peer_mean_days'] - (float)$yoy['yoy_mean_days'],
     ];
 
     return [$features, $asof];

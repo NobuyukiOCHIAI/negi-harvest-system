@@ -1,23 +1,42 @@
 <?php
 require_once '../db.php';
 require_once '../api/json_utils.php';
-require_once '../api/logging.php'; // log_error($message, array $ctx=[])
+require_once '../api/logging.php';
 require_once __DIR__ . '/../lib/build_features.php';
+require_once __DIR__ . '/../lib/predict_ridge.php';
 mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
 $__stage = 'begin';
 
-function getEnvOrDefault($key, $default = null) {
-    $v = getenv($key);
-    return ($v !== false && $v !== '') ? $v : $default;
-}
-
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $cycleId = 0;
     try {
         mysqli_begin_transaction($link);
 
         $bedId = (int)$_POST['bed_id'];
-        $sow   = $_POST['sow_date'] ?? null;
-        $plant = $_POST['plant_date'];
+        $sow   = trim((string)($_POST['sow_date'] ?? ''));
+        $plant = $_POST['plant_date'] ?? '';
+        $scheduleId = (int)($_POST['schedule_id'] ?? 0);
+
+        if ($sow === '') {
+            throw new RuntimeException('播種日は必須です。');
+        }
+        if ($plant === '') {
+            throw new RuntimeException('定植日は必須です。');
+        }
+
+        // 同一ベッドに未完了サイクルがある場合は拒否
+        $stmt = mysqli_prepare(
+            $link,
+            "SELECT id FROM cycles WHERE bed_id = ? AND harvest_end IS NULL LIMIT 1"
+        );
+        mysqli_stmt_bind_param($stmt, 'i', $bedId);
+        mysqli_stmt_execute($stmt);
+        $ores = mysqli_stmt_get_result($stmt);
+        $open = mysqli_fetch_assoc($ores);
+        mysqli_stmt_close($stmt);
+        if ($open) {
+            throw new RuntimeException('このベッドには未完了のサイクルがあります（cycle_id=' . $open['id'] . '）。');
+        }
 
         $stmt = mysqli_prepare($link, "INSERT INTO cycles (bed_id, sow_date, plant_date) VALUES (?, ?, ?)");
         mysqli_stmt_bind_param($stmt, 'iss', $bedId, $sow, $plant);
@@ -26,83 +45,65 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $cycleId = (int)mysqli_insert_id($link);
         $__stage = 'insert-cycles';
 
-        // 特徴量の作成・保存
-        $__stage = 'build-features';
+        if ($scheduleId > 0) {
+            $st = mysqli_prepare(
+                $link,
+                "UPDATE plant_schedule SET status='done' WHERE id=? AND bed_id=? AND status IN ('planned','approved')"
+            );
+            if ($st) {
+                mysqli_stmt_bind_param($st, 'ii', $scheduleId, $bedId);
+                @mysqli_stmt_execute($st);
+                mysqli_stmt_close($st);
+            }
+        }
+
+        // サイクルは確定。以降の予測失敗でも残す。
+        mysqli_commit($link);
+
+        $__stage = 'build-features-predict';
         try {
-            $features = rebuild_features_for_cycle($link, $cycleId);
+            // 定植時は plant モデル・⑤なし
+            $result = rebuild_and_predict_cycle($link, $cycleId, false, 'plant');
+            log_error('debug log', [
+                'stage' => 'ridge predict ok',
+                'cycle_id' => $cycleId,
+                'pred' => $result['pred'],
+            ]);
+            header('Location: ../cycle.php?id=' . $cycleId . '&msg=predicted');
+            exit;
         } catch (Throwable $e) {
-            $__stage = 'alert-data-missing';
-            $payload = encode_json(['cycle_id' => $cycleId]);
-            $stmt = mysqli_prepare($link, "INSERT INTO alerts (date, type, payload_json, status) VALUES (CURDATE(),'data_missing', ?, 'open')");
-            mysqli_stmt_bind_param($stmt, 's', $payload);
-            mysqli_stmt_execute($stmt);
-            mysqli_stmt_close($stmt);
-            mysqli_commit($link);
-            header('Location: ../cycle.php?id=' . $cycleId . '&msg=temp_pending');
+            $msg = $e->getMessage();
+            if (stripos($msg, 'temperature') !== false || stripos($msg, 'asof') !== false || stripos($msg, 'data missing') !== false) {
+                $__stage = 'alert-data-missing';
+                $payload = encode_json(['cycle_id' => $cycleId, 'error' => $msg]);
+                $stmt = mysqli_prepare($link, "INSERT INTO alerts (date, type, payload_json, status) VALUES (CURDATE(),'data_missing', ?, 'open')");
+                mysqli_stmt_bind_param($stmt, 's', $payload);
+                mysqli_stmt_execute($stmt);
+                mysqli_stmt_close($stmt);
+                header('Location: ../cycle.php?id=' . $cycleId . '&msg=temp_pending');
+                exit;
+            }
+            log_error('planting predict failed', [
+                'stage' => $__stage,
+                'cycle_id' => $cycleId,
+                'error' => $msg,
+            ]);
+            header('Location: ../cycle.php?id=' . $cycleId . '&msg=predict_failed');
             exit;
         }
 
-        $__stage = 'call-api';
-        $apiUrl = getEnvOrDefault('XGB_API_URL', 'http://tk2-118-59530.vs.sakura.ne.jp/xgbapi/api/predict_both');
-        $apiKey = getEnvOrDefault('XGB_API_KEY', '');
-        $payload = json_encode(['data' => [['features' => $features]]], JSON_UNESCAPED_UNICODE);
-
-        // debug log for features before API call
-        log_error('debug log', [
-            'stage' => 'XGBAPI送信前:features',
-            'cycle_id' => $cycleId,
-            'features' => $features,
-        ]);
-
-        $attempt = 0;
-        $json = null;
-        $delay = 1;
-        while ($attempt < 3) {
-            $attempt++;
-            $ch = curl_init($apiUrl);
-            curl_setopt_array($ch, [
-                CURLOPT_POST => true,
-                CURLOPT_HTTPHEADER => ["Content-Type: application/json", "x-api-key: " . $apiKey],
-                CURLOPT_POSTFIELDS => $payload,
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_CONNECTTIMEOUT => 3,
-                CURLOPT_TIMEOUT => 5,
-            ]);
-            $res = curl_exec($ch);
-            curl_close($ch);
-            if ($res !== false) {
-                $json = json_decode($res, true);
-                if (($json['ok'] ?? false)) { break; }
-            }
-            if ($attempt < 3) { sleep($delay); $delay *= 2; }
-        }
-        if (!($json['ok'] ?? false)) {
-            throw new Exception('xgbapi response not ok');
-        }
-
-        $pred = $json['predictions'][0] ?? null;
-        if (!$pred) { throw new Exception('no predictions'); }
-
-        $__stage = 'insert-predictions';
-        $stmt = mysqli_prepare($link, "INSERT INTO predictions (cycle_id, model_id, pred_days, pred_total_kg) VALUES (?, ?, ?, ?)");
-        $modelId = basename(dirname($json['model_path_days'] ?? 'current'));
-        mysqli_stmt_bind_param($stmt, 'isdd', $cycleId, $modelId, $pred['days'], $pred['yield']);
-        mysqli_stmt_execute($stmt);
-        mysqli_stmt_close($stmt);
-
-        // 期待収穫日は DB 保存しない（列無し）。必要なら画面側で：
-        // $expectedDate = (new DateTime($plant))->modify('+' . round($pred['days']) . ' day')->format('Y-m-d');
-
-        mysqli_commit($link);
-        header('Location: ../cycle.php?id=' . $cycleId . '&msg=predicted');
-        exit;
-
     } catch (Throwable $e) {
         if (isset($link) && $link instanceof mysqli) { @mysqli_rollback($link); }
-        log_error('planting failed', ['stage'=>$__stage, 'error'=>$e->getMessage()]);
-        header('Location: planting.php?error=1'); exit;
+        log_error('planting failed', ['stage'=>$__stage, 'error'=>$e->getMessage(), 'cycle_id'=>$cycleId]);
+        header('Location: planting.php?error=1&msg=' . rawurlencode($e->getMessage()));
+        exit;
     }
 }
+
+$error = isset($_GET['error']);
+$errorMsg = $_GET['msg'] ?? '';
+$preBedId = (int)($_GET['bed_id'] ?? 0);
+$preScheduleId = (int)($_GET['schedule_id'] ?? 0);
 ?>
 <!DOCTYPE html>
 <html lang="ja">
@@ -115,8 +116,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 </head>
 <body class="pb-5">
 <div class="container py-4">
-  <h4 class="mb-4 text-primary">🌱 定植入力</h4>
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h4 class="mb-0 text-primary">定植入力</h4>
+    <a class="btn btn-sm btn-outline-success" href="../today.php">今日の作業へ</a>
+  </div>
+  <?php if ($error): ?>
+    <div class="alert alert-danger">
+      <?= $errorMsg !== ''
+        ? htmlspecialchars($errorMsg, ENT_QUOTES, 'UTF-8')
+        : '定植登録に失敗しました。未完了サイクルの有無や入力値を確認してください。' ?>
+    </div>
+  <?php endif; ?>
   <form method="POST">
+    <?php if ($preScheduleId > 0): ?>
+      <input type="hidden" name="schedule_id" value="<?= $preScheduleId ?>">
+    <?php endif; ?>
     <div class="mb-4">
       <label for="bed" class="form-label fs-5">ベッド名</label>
       <select id="bed" name="bed_id" class="form-select form-select-lg" required>
@@ -124,19 +138,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <?php
         $result = mysqli_query($link, "SELECT id, name FROM beds WHERE active=1 ORDER BY name");
         while ($b = mysqli_fetch_assoc($result)) {
-            echo "<option value='{$b['id']}'>{$b['name']}</option>";
+            $sel = ($preBedId > 0 && (int)$b['id'] === $preBedId) ? ' selected' : '';
+            echo '<option value="' . (int)$b['id'] . '"' . $sel . '>' . htmlspecialchars($b['name']) . '</option>';
         }
         mysqli_free_result($result);
         ?>
       </select>
     </div>
     <div class="mb-4">
-      <label for="sow_date" class="form-label fs-5">播種日</label>
-      <input type="date" id="sow_date" name="sow_date" class="form-control form-control-lg">
-      <div class="form-text">育苗日数: <span id="nursery_days">0</span>日</div>
+      <label for="sow_date" class="form-label fs-5">播種日 <span class="text-danger">必須</span></label>
+      <input type="date" id="sow_date" name="sow_date" class="form-control form-control-lg" required>
+      <div class="form-text">育苗日数: <span id="nursery_days">0</span>日（予測に使用）</div>
     </div>
     <div class="mb-4">
-      <label for="plant_date" class="form-label fs-5">定植日</label>
+      <label for="plant_date" class="form-label fs-5">定植日 <span class="text-danger">必須</span></label>
       <input type="date" id="plant_date" name="plant_date" class="form-control form-control-lg" required>
     </div>
     <div class="d-grid">
@@ -144,17 +159,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     </div>
   </form>
 </div>
-<nav class="navbar fixed-bottom bg-light border-top">
-  <div class="container-fluid">
-    <div class="d-flex justify-content-around w-100">
-      <a href="../index.php" class="text-center nav-link"><div>🏠</div><small>ホーム</small></a>
-      <a href="../monitor.php" class="text-center nav-link"><div>🌱</div><small>栽培状況</small></a>
-      <a href="../inventory.php" class="text-center nav-link"><div>📊</div><small>在庫</small></a>
-      <a href="../plan.php" class="text-center nav-link"><div>📅</div><small>計画</small></a>
-      <a href="../settings.php" class="text-center nav-link"><div>⚙️</div><small>設定</small></a>
-    </div>
-  </div>
-</nav>
+<?php
+require_once __DIR__ . '/../lib/nav.php';
+forecast_nav('today', '../');
+?>
 <script>
 function calcDays(){
   const plant = new Date(document.getElementById('plant_date').value);
@@ -169,4 +177,3 @@ document.getElementById('sow_date').addEventListener('change', calcDays);
 </script>
 </body>
 </html>
-
