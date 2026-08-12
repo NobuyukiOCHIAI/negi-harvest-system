@@ -8,3 +8,10 @@ __pycache__/
 # OS / editor
 .DS_Store
 Thumbs.db
+
+# Scratch / temp folders from migration - not part of the project
+_from_zip/
+_tmp_model_review/
+
+# Windows-only vendored binary (lib_lightgbm.dll) - not portable, not tracked
+api/lib/
