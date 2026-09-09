@@ -29,7 +29,7 @@ if (!$viewOk) {
 <div class="container py-3">
   <div class="alert alert-danger">ビュー未作成です。sql/_apply_harvest_actual_views.py を実行してください。</div>
 </div>
-<?php forecast_nav('inventory'); ?>
+<?php forecast_nav('settings'); ?>
 </body></html><?php
     exit;
 }
@@ -315,7 +315,7 @@ $isCalendarYear = ($focusYear === (int)date('Y'));
 
   <div class="chart-card">
     <div class="chart-title">月別年次比較</div>
-    <p class="page-sub" style="margin:0 0 0.55rem">強調＝ベッドあたり（合計÷個数）。1週あたり＝月合計÷4。当月のみ開いて表示</p>
+    <p class="page-sub" style="margin:0 0 0.55rem">強調＝ベッドあたり（合計÷個数）。合計は<strong>ゴミ込み</strong>（パフォーマンス）。1週あたり＝月合計÷4。当月のみ開いて表示</p>
     <div class="num-board">
       <?php for ($m = 1; $m <= 12; $m++):
         $yearCells = [];
@@ -441,7 +441,7 @@ $isCalendarYear = ($focusYear === (int)date('Y'));
     </table>
   </div>
 </div>
-<?php forecast_nav('inventory'); ?>
+<?php forecast_nav('settings'); ?>
 <script>
 const labels = <?= json_encode($monthLabels, JSON_UNESCAPED_UNICODE) ?>;
 const opt = {
