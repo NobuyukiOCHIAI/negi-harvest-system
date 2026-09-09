@@ -12,6 +12,71 @@ require_once __DIR__ . '/plant_schedule.php';
 const GF_REPLANT_GRACE_DAYS = 5;
 
 /**
+ * 未完了サイクル（能力計算用: 残量kg・収穫週）
+ *
+ * @return list<array{
+ *   bed_id:int,
+ *   bed_name:string,
+ *   forecast_kg:float,
+ *   harvested_kg:float,
+ *   remain_kg:float,
+ *   expected_harvest:string,
+ *   harvest_week:string,
+ *   free_date:string
+ * }>
+ */
+function rotation_open_cycles(mysqli $link): array
+{
+    $today = date('Y-m-d');
+    $out = [];
+
+    $sql = "
+SELECT
+  c.bed_id,
+  b.name AS bed_name,
+  COALESCE(pr.postproc_total_kg, pr.pred_total_kg) AS forecast_kg,
+  (SELECT COALESCE(SUM(h.harvest_kg), 0) FROM harvests h WHERE h.cycle_id = c.id) AS harvested_kg,
+  DATE_ADD(c.plant_date, INTERVAL CAST(ROUND(pr.pred_days) AS SIGNED) DAY) AS expected_harvest
+FROM cycles c
+JOIN beds b ON b.id = c.bed_id
+LEFT JOIN predictions pr
+  ON pr.cycle_id = c.id
+ AND NOT EXISTS (
+       SELECT 1 FROM predictions p2
+        WHERE p2.cycle_id = pr.cycle_id AND p2.created_at > pr.created_at
+     )
+WHERE c.harvest_end IS NULL AND b.active = 1
+";
+    $res = mysqli_query($link, $sql);
+    if (!$res) {
+        return $out;
+    }
+    while ($row = mysqli_fetch_assoc($res)) {
+        $forecast = $row['forecast_kg'] !== null ? (float)$row['forecast_kg'] : 0.0;
+        $harvested = (float)$row['harvested_kg'];
+        $remain = max(0.0, $forecast - $harvested);
+        $expected = $row['expected_harvest'] ?: $today;
+        if ($expected < $today) {
+            // 予測超過 → 残量は当週に一度だけ載せる
+            $expected = $today;
+        }
+        $week = gcal_week_start_sunday($expected);
+        $out[] = [
+            'bed_id' => (int)$row['bed_id'],
+            'bed_name' => $row['bed_name'],
+            'forecast_kg' => $forecast,
+            'harvested_kg' => $harvested,
+            'remain_kg' => $remain,
+            'expected_harvest' => $expected,
+            'harvest_week' => $week,
+            'free_date' => $expected,
+        ];
+    }
+    mysqli_free_result($res);
+    return $out;
+}
+
+/**
  * ベッドごとの「次に空く日」とオープン予測の週次kg
  *
  * @return array{
@@ -25,52 +90,22 @@ function rotation_bed_states(mysqli $link): array
     $openByWeek = [];
     $busy = [];
 
-    $sql = "
-SELECT
-  c.id AS cycle_id,
-  c.bed_id,
-  b.name AS bed_name,
-  c.plant_date,
-  c.harvest_start,
-  COALESCE(pr.postproc_total_kg, pr.pred_total_kg) AS forecast_kg,
-  pr.pred_days,
-  DATE_ADD(c.plant_date, INTERVAL CAST(ROUND(pr.pred_days) AS SIGNED) DAY) AS expected_harvest
-FROM cycles c
-JOIN beds b ON b.id = c.bed_id
-LEFT JOIN predictions pr
-  ON pr.cycle_id = c.id
- AND NOT EXISTS (
-       SELECT 1 FROM predictions p2
-        WHERE p2.cycle_id = pr.cycle_id AND p2.created_at > pr.created_at
-     )
-WHERE c.harvest_end IS NULL AND b.active = 1
-";
-    $res = mysqli_query($link, $sql);
-    if ($res) {
-        while ($row = mysqli_fetch_assoc($res)) {
-            $bedId = (int)$row['bed_id'];
-            $kg = $row['forecast_kg'] !== null ? (float)$row['forecast_kg'] : 0.0;
-            $expected = $row['expected_harvest'] ?: $today;
-            if ($expected < $today) {
-                // すでに予測超過 → すぐ収穫完了想定（今日空き）
-                $expected = $today;
+    foreach (rotation_open_cycles($link) as $oc) {
+        $bedId = $oc['bed_id'];
+        $remain = $oc['remain_kg'];
+        if ($remain > 0.001) {
+            $week = $oc['harvest_week'];
+            if (!isset($openByWeek[$week])) {
+                $openByWeek[$week] = 0.0;
             }
-            $week = gcal_week_start_sunday($expected);
-            if ($kg > 0) {
-                if (!isset($openByWeek[$week])) {
-                    $openByWeek[$week] = 0.0;
-                }
-                $openByWeek[$week] += $kg;
-            }
-            // 収穫完了で空く日 = expected（簡易: 初回予測日でサイクル終了とみなす）
-            $busy[$bedId] = [
-                'bed_id' => $bedId,
-                'name' => $row['bed_name'],
-                'free_date' => $expected,
-                'source' => 'open_cycle',
-            ];
+            $openByWeek[$week] += $remain;
         }
-        mysqli_free_result($res);
+        $busy[$bedId] = [
+            'bed_id' => $bedId,
+            'name' => $oc['bed_name'],
+            'free_date' => $oc['free_date'],
+            'source' => 'open_cycle',
+        ];
     }
 
     // 空きベッド（未完了なし）
@@ -106,6 +141,20 @@ WHERE c.harvest_end IS NULL AND b.active = 1
 }
 
 /**
+ * 緑・能力計算用の有効定植日。
+ * 予定が過去なら明日（過大評価防止）。DBの planned_plant_date は変えない。
+ */
+function rotation_effective_plant_date(string $plannedPlantDate, ?string $today = null): string
+{
+    $today = $today ?: date('Y-m-d');
+    $planned = substr($plannedPlantDate, 0, 10);
+    if ($planned < $today) {
+        return date('Y-m-d', strtotime($today . ' +1 day'));
+    }
+    return $planned;
+}
+
+/**
  * 既に planned/approved の定植を週次kgへ
  *
  * @return array<string,float>
@@ -121,19 +170,32 @@ function rotation_planned_by_week(mysqli $link, float $defaultDays, float $defau
     if (!$has) {
         return $adds;
     }
+
+    $openWeekByBed = [];
+    foreach (rotation_open_cycles($link) as $oc) {
+        $openWeekByBed[$oc['bed_id']] = $oc['harvest_week'];
+    }
+
     $res = mysqli_query(
         $link,
-        "SELECT planned_plant_date, expected_days, expected_yield_kg, bed_id
-         FROM plant_schedule
-         WHERE status IN ('planned','approved')"
+        "SELECT s.planned_plant_date, s.expected_days, s.expected_yield_kg, s.bed_id
+         FROM plant_schedule s
+         JOIN beds b ON b.id = s.bed_id AND b.active = 1
+         WHERE s.status IN ('planned','approved')"
     );
     if (!$res) {
         return $adds;
     }
     while ($row = mysqli_fetch_assoc($res)) {
+        $bedId = (int)$row['bed_id'];
         $days = $row['expected_days'] !== null ? (float)$row['expected_days'] : $defaultDays;
         $kg = $row['expected_yield_kg'] !== null ? (float)$row['expected_yield_kg'] : $defaultYield;
-        $w = plant_schedule_harvest_week_from_plant($row['planned_plant_date'], $days);
+        $plantEff = rotation_effective_plant_date((string)$row['planned_plant_date']);
+        $w = plant_schedule_harvest_week_from_plant($plantEff, $days);
+        // 栽培中ベッドの今サイクル収穫週と同週の計画は二重計上しない
+        if (isset($openWeekByBed[$bedId]) && $openWeekByBed[$bedId] === $w) {
+            continue;
+        }
         if (!isset($adds[$w])) {
             $adds[$w] = 0.0;
         }
@@ -245,7 +307,8 @@ function rotation_reserved_free_dates(mysqli $link, float $defaultDays): array
     while ($row = mysqli_fetch_assoc($res)) {
         $bedId = (int)$row['bed_id'];
         $days = $row['expected_days'] !== null ? (float)$row['expected_days'] : $defaultDays;
-        $harvest = date('Y-m-d', strtotime($row['planned_plant_date'] . ' +' . (int)round($days) . ' days'));
+        $plantEff = rotation_effective_plant_date((string)$row['planned_plant_date']);
+        $harvest = date('Y-m-d', strtotime($plantEff . ' +' . (int)round($days) . ' days'));
         // 複数予約なら最後の収穫日
         if (!isset($out[$bedId]) || $harvest > $out[$bedId]) {
             $out[$bedId] = $harvest;
@@ -468,7 +531,9 @@ function rotation_capacity_outlook(mysqli $link, int $weeksAhead = 16): array
 }
 
 /**
- * 常時回転: 空きベッドを猶予内で plant_schedule に積む（ギャップ埋めより先）
+ * 常時回転: 次の定植を plant_schedule に自動積む（ボタン待ちにしない）
+ * - 空きベッド: 収穫終了 + 猶予日（過去日は遅れとして残す）
+ * - 栽培中: 予測収穫日 + 猶予日（収穫前から次が計画に載る）
  *
  * @return array{created:int,skipped_reserved:int,defaults:array}
  */
@@ -502,8 +567,8 @@ function rotation_generate_continuous_plants(mysqli $link, int $horizonWeeks = 1
     );
 
     foreach ($states['beds'] as $b) {
-        if ($b['source'] !== 'empty') {
-            // オープン中は「空いた後」の仮想は capacity 側。ここでは今すぐ植えられる空きのみ明示登録
+        $src = (string)($b['source'] ?? '');
+        if ($src !== 'empty' && $src !== 'open_cycle') {
             continue;
         }
         $bedId = (int)$b['bed_id'];
@@ -513,14 +578,14 @@ function rotation_generate_continuous_plants(mysqli $link, int $horizonWeeks = 1
         }
         $free = $b['free_date'] ?: $today;
         $plant = date('Y-m-d', strtotime($free . ' +' . GF_REPLANT_GRACE_DAYS . ' days'));
-        if ($plant < $today) {
-            $plant = $today;
-        }
+        // 過去日は今日に繰り上げない。遅れ可視化の起点にする。
         if ($plant > $horizonEnd) {
             continue;
         }
         $target = plant_schedule_harvest_week_from_plant($plant, $avgDays);
-        $note = '常時回転: 空き後' . GF_REPLANT_GRACE_DAYS . '日以内定植';
+        $note = $src === 'open_cycle'
+            ? '常時回転: 収穫後' . GF_REPLANT_GRACE_DAYS . '日以内定植（自動）'
+            : '常時回転: 空き後' . GF_REPLANT_GRACE_DAYS . '日以内定植';
         mysqli_stmt_bind_param(
             $stmt,
             'sisdds',

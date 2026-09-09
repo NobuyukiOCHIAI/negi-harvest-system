@@ -2,14 +2,11 @@
 /**
  * 需給オペレーション中核
  *
- * ① フル稼働（空き→猶予内定植）をデフォルトで自発維持
- * ② システム計画ライン（能力）と GCAL確定コミットを分離管理
- *    ※確定コミットは GCAL からのみ（manual 反映はしない）
- * ③ 一時余剰（収穫猶予内の廃棄リスク）と数か月トレンドを区別
- * ④ アラートは「●月●週 ±■kg」を時系列で表示。青線はトレンド反映シミュレーション
- * ⑤ 季節ベース（昨対・月次）可視化用データ
- * ⑥ 入力/同期のたびに ensure で再リコメンド
- * ⑦ 監視エージェント用スナップショット
+ * ① 収穫後猶予日内の次定植をツール作業なしで自動維持
+ * ② 定植計画の遅れを可視化し、先の計画が届くかを監視
+ * ③ 計画ライン上の先余り → 営業拡大。当週バッファの放出は定植済で判断
+ * ④ 低温期に向かう能力減は早めに営業へ
+ * ⑤ 確定コミットは GCAL のみ。能力はシステム計画
  */
 require_once __DIR__ . '/rotation_capacity.php';
 require_once __DIR__ . '/inventory_trust.php';
@@ -18,9 +15,16 @@ require_once __DIR__ . '/plant_schedule.php';
 require_once __DIR__ . '/gcal_shipments.php';
 require_once __DIR__ . '/overgrow_metrics.php';
 require_once __DIR__ . '/staff_recommend.php';
+require_once __DIR__ . '/date_display.php';
 
-/** トレンド判定の最小連続週（≒1か月） */
+/** 拡大トレンドの最小連続週 */
 const GF_TREND_MIN_WEEKS = 4;
+
+/** 減少トレンドは早め（低温期の察知） */
+const GF_TREND_TIGHTEN_MIN_WEEKS = 3;
+
+/** 計画上の拡大を話してよい最短リード（当週・翌週は定植済バッファを売らない） */
+const GF_PLAN_EXPAND_LEAD_WEEKS = 3;
 
 /** 一時余剰とみなす「収穫までの安全猶予」既定（日）。実績ギャップから上書き */
 const GF_SPOT_GRACE_DEFAULT_DAYS = 10;
@@ -85,6 +89,8 @@ function supply_ensure_full_rotation(mysqli $link, bool $force = false): array
     if ($chk) {
         mysqli_free_result($chk);
     }
+    plant_schedule_collapse_open_dupes($link);
+
     if ($hasSync && !$force) {
         $st = mysqli_prepare($link, "SELECT UNIX_TIMESTAMP(last_synced_at) AS ts FROM sync_state WHERE sync_key = ? LIMIT 1");
         if ($st) {
@@ -230,16 +236,217 @@ function supply_dual_week_lines(mysqli $link, int $weeksAhead = 16): array
 }
 
 /**
- * アラート1行: 「●月●週 ±■kg」
+ * アラート1行: 「8/9週 ±■kg」
  */
 function supply_alert_short_line(array $a): string
 {
+    if (($a['type'] ?? '') === 'plant_delay' || ($a['kind'] ?? '') === 'exec') {
+        return (string)($a['short_line'] ?? $a['label'] ?? '定植遅れ');
+    }
     $isTighten = in_array(($a['type'] ?? ''), ['commit_tighten', 'trend_tighten'], true);
     $isSpot = ($a['kind'] ?? '') === 'spot' || ($a['type'] ?? '') === 'spot_surplus';
     $sign = $isTighten ? '−' : '+';
     $kg = (int)round((float)($a['kg_per_week'] ?? 0));
-    $base = supply_week_label((string)$a['start_week']) . ' ' . $sign . $kg . 'kg';
-    return $isSpot ? ($base . '（一時）') : $base;
+    $start = supply_week_label((string)$a['start_week']);
+    $endRaw = (string)($a['end_week'] ?? $a['start_week']);
+    $weeks = (int)($a['weeks'] ?? 1);
+    $ranged = !$isSpot && ($weeks > 1 || $endRaw !== (string)$a['start_week']);
+    if (!$ranged) {
+        return $start . ' ' . $sign . $kg . 'kg';
+    }
+    return $start . '〜' . supply_week_label($endRaw) . ' ' . $sign . $kg . 'kg/週';
+}
+
+function supply_trend_kind_is_expand(array $t): bool
+{
+    return in_array((string)($t['type'] ?? ''), ['trend_expand', 'commit_expand'], true);
+}
+
+function supply_trend_kind_is_tighten(array $t): bool
+{
+    return in_array((string)($t['type'] ?? ''), ['trend_tighten', 'commit_tighten'], true);
+}
+
+/**
+ * 同方向の連続週トレンドを1行にまとめる
+ *
+ * @param list<array> $trends
+ * @return list<array>
+ */
+function supply_merge_consecutive_trends(array $trends): array
+{
+    if (count($trends) < 2) {
+        foreach ($trends as &$t) {
+            $t['short_line'] = supply_alert_short_line($t);
+        }
+        unset($t);
+        return $trends;
+    }
+    usort($trends, static function ($a, $b) {
+        $c = strcmp((string)$a['start_week'], (string)$b['start_week']);
+        if ($c !== 0) {
+            return $c;
+        }
+        return ($b['priority'] ?? 0) <=> ($a['priority'] ?? 0);
+    });
+    $out = [];
+    foreach ($trends as $t) {
+        if (!$out) {
+            $out[] = $t;
+            continue;
+        }
+        $prevIdx = count($out) - 1;
+        $prev = $out[$prevIdx];
+        $same = (supply_trend_kind_is_expand($prev) && supply_trend_kind_is_expand($t))
+            || (supply_trend_kind_is_tighten($prev) && supply_trend_kind_is_tighten($t));
+        $nextStart = date('Y-m-d', strtotime((string)$prev['end_week'] . ' +7 days'));
+        $adjacent = (string)$t['start_week'] <= $nextStart;
+        if (!$same || !$adjacent) {
+            $out[] = $t;
+            continue;
+        }
+        $end = (string)$t['end_week'] > (string)$prev['end_week'] ? (string)$t['end_week'] : (string)$prev['end_week'];
+        $weeks = (int)round((strtotime($end) - strtotime((string)$prev['start_week'])) / 86400 / 7) + 1;
+        $w1 = max(1, (int)($prev['weeks'] ?? 1));
+        $w2 = max(1, (int)($t['weeks'] ?? 1));
+        $per = round(
+            (((float)$prev['kg_per_week'] * $w1) + ((float)$t['kg_per_week'] * $w2)) / ($w1 + $w2),
+            0
+        );
+        $prev['end_week'] = $end;
+        $prev['weeks'] = $weeks;
+        $prev['kg_per_week'] = $per;
+        $prev['total_kg'] = round($per * $weeks, 0);
+        $prev['short_line'] = supply_alert_short_line($prev);
+        $out[$prevIdx] = $prev;
+    }
+    foreach ($out as &$t) {
+        $t['short_line'] = supply_alert_short_line($t);
+    }
+    unset($t);
+    return $out;
+}
+
+/**
+ * 減少トレンドが余剰在庫で賄えるか、ベッドあたり何kgを下回ると累計が割れるか。
+ * 前提: 収穫後 GF_REPLANT_GRACE_DAYS 日で次定植する計画能力。
+ *
+ * @param list<array> $cumWeeks
+ * @return array{covered:bool,y0:float,y_break:float,min_cum:float,min_week:?string,beds_hint:float,note:string}
+ */
+function supply_tighten_cover_analysis(mysqli $link, array $cumWeeks, string $startWeek, string $endWeek): array
+{
+    $defaults = plant_schedule_season_defaults($link);
+    $y0 = (float)($defaults['yield'] ?? 0);
+    $nBeds = 0;
+    $sumKg = 0.0;
+    $sql = "
+SELECT COALESCE(pr.postproc_total_kg, pr.pred_total_kg) AS kg
+FROM cycles c
+JOIN beds b ON b.id = c.bed_id AND b.active = 1
+JOIN predictions pr ON pr.cycle_id = c.id
+ AND NOT EXISTS (
+   SELECT 1 FROM predictions p2 WHERE p2.cycle_id = pr.cycle_id AND p2.created_at > pr.created_at
+ )
+WHERE c.harvest_end IS NULL AND pr.pred_days IS NOT NULL
+  AND DATE_SUB(
+        DATE_ADD(c.plant_date, INTERVAL CAST(ROUND(pr.pred_days) AS SIGNED) DAY),
+        INTERVAL (DAYOFWEEK(DATE_ADD(c.plant_date, INTERVAL CAST(ROUND(pr.pred_days) AS SIGNED) DAY)) - 1) DAY
+      ) BETWEEN ? AND ?
+";
+    $stmt = mysqli_prepare($link, $sql);
+    if ($stmt) {
+        mysqli_stmt_bind_param($stmt, 'ss', $startWeek, $endWeek);
+        mysqli_stmt_execute($stmt);
+        $res = mysqli_stmt_get_result($stmt);
+        while ($row = mysqli_fetch_assoc($res)) {
+            $kg = (float)$row['kg'];
+            if ($kg <= 0) {
+                continue;
+            }
+            $sumKg += $kg;
+            $nBeds++;
+        }
+        mysqli_stmt_close($stmt);
+    }
+    if ($nBeds >= 3) {
+        $y0 = $sumKg / $nBeds;
+    }
+    if ($y0 < 20) {
+        $y0 = 130.0;
+    }
+
+    $from = false;
+    $minCum = null;
+    $minWeek = null;
+    $capToMin = 0.0;
+    $accCap = 0.0;
+    foreach ($cumWeeks as $w) {
+        $wk = (string)($w['week'] ?? '');
+        if ($wk === $startWeek) {
+            $from = true;
+        }
+        if (!$from) {
+            continue;
+        }
+        $accCap += (float)($w['capacity_kg'] ?? 0);
+        $cum = (float)($w['cum_surplus_kg'] ?? 0);
+        if ($minCum === null || $cum < $minCum) {
+            $minCum = $cum;
+            $minWeek = $wk;
+            $capToMin = $accCap;
+        }
+    }
+    if ($minCum === null) {
+        $minCum = 0.0;
+    }
+
+    $covered = $minCum > 1.0;
+    $yBreak = $y0;
+    if ($covered && $capToMin > 10) {
+        $yBreak = $y0 * (1.0 - $minCum / $capToMin);
+    }
+    $yBreak = max(0.0, round($yBreak, 0));
+    $y0r = round($y0, 0);
+    $grace = (int)GF_REPLANT_GRACE_DAYS;
+
+    if ($covered) {
+        if ($yBreak <= 0) {
+            $note = sprintf(
+                '収穫後%d日で次定植する計画なら、いまの累計余剰（最低 +%dkg・%s）だけで出荷を賄える。ベッドあたり収穫がゼロでも、この期間の累計は割れない。',
+                $grace,
+                (int)round($minCum, 0),
+                $minWeek ? supply_week_label($minWeek) : ''
+            );
+        } else {
+            $note = sprintf(
+                '収穫後%d日で次定植する計画なら、いまの累計余剰（最低 +%dkg・%s）で賄える。ベッドあたり収穫量が現状 %dkg から %dkg を下回ると、累計在庫がマイナスになるリスクが顕在化する。',
+                $grace,
+                (int)round($minCum, 0),
+                $minWeek ? supply_week_label($minWeek) : '',
+                (int)$y0r,
+                (int)$yBreak
+            );
+        }
+    } else {
+        $note = sprintf(
+            '収穫後%d日定植の計画でも、累計余剰は賄いきれない（最低 %dkg%s）。ベッドあたり現状 %dkg。',
+            $grace,
+            (int)round($minCum, 0),
+            $minWeek ? '・' . supply_week_label($minWeek) : '',
+            (int)$y0r
+        );
+    }
+
+    return [
+        'covered' => $covered,
+        'y0' => (float)$y0r,
+        'y_break' => (float)$yBreak,
+        'min_cum' => round((float)$minCum, 0),
+        'min_week' => $minWeek,
+        'beds_hint' => (float)$nBeds,
+        'note' => $note,
+    ];
 }
 
 /**
@@ -249,17 +456,22 @@ function supply_alert_short_line(array $a): string
  * @param list<array> $actions
  * @return list<float>
  */
-function supply_sim_commit_series(array $weekRows, array $actions): array
+function supply_sim_commit_series(array $weekRows, array $actions, string $which = 'spot'): array
 {
+    $wantSpot = ($which === 'spot');
     $adj = [];
     foreach ($actions as $a) {
-        if (($a['kind'] ?? '') === 'spot' || ($a['type'] ?? '') === 'spot_surplus') {
+        if (($a['kind'] ?? '') === 'exec' || ($a['type'] ?? '') === 'plant_delay') {
+            continue;
+        }
+        $isSpot = ($a['kind'] ?? '') === 'spot' || ($a['type'] ?? '') === 'spot_surplus';
+        if ($wantSpot !== $isSpot) {
             continue;
         }
         $isTighten = in_array(($a['type'] ?? ''), ['commit_tighten', 'trend_tighten'], true);
         $delta = ($isTighten ? -1.0 : 1.0) * (float)($a['kg_per_week'] ?? 0);
         $ts = strtotime((string)$a['start_week']);
-        $te = strtotime((string)$a['end_week']);
+        $te = strtotime((string)($a['end_week'] ?? $a['start_week']));
         if ($ts === false || $te === false) {
             continue;
         }
@@ -435,51 +647,64 @@ WHERE c.harvest_end IS NULL
 }
 
 /**
- * 予測「直近週」と同じく、経過週のオープン予測余剰を今週開始時点まで積み上げた残高
- */
-function supply_inventory_style_cum_carry(mysqli $link): float
-{
-    $today = date('Y-m-d');
-    $currentWeek = gcal_week_start_sunday($today);
-    $rows = supply_inventory_surplus_rows($link);
-    $carry = 0.0;
-    foreach ($rows as $r) {
-        if ($r['week_start_date'] >= $currentWeek) {
-            break;
-        }
-        $carry = (float)$r['surplus_kg'];
-    }
-    return round($carry, 1);
-}
-
-/**
- * 週次余剰配列に期初繰越を足して累計系列を作る
+ * 需給ページの累計余剰線を、予測ページ（既存株ベース）の残高に
+ * 常時回転・予定定植の増分を継続加算して作る。
  *
- * @param list<float> $weekDeltas
+ * 予測側 supply_inventory_surplus_rows() の surplus_kg（経過週から続く実績ベースの
+ * 累計）をそのまま土台にし、そこへ週ごとの planned_kg + rotation_kg（＝まだ cycles
+ * に登録されていない、常時回転で仮定する将来の定植分）を積み増していく。
+ * どちらの成分も「その週までの累計」として同じループで連続的に積み上げるため、
+ * 予測ページとの境界で数字が飛ぶことがない。データが無い週は直前の残高を維持する
+ * （その週の実績デルタを0とみなす）。
+ *
+ * @param list<array{week:string,planned_kg?:float,rotation_kg?:float}> $weekSlice
+ * @param bool $withRotation true=計画累計（土台＋将来定植）。false=定植済累計（同じ土台のみ）
  * @return list<float>
  */
-function supply_cum_surplus_with_carry(array $weekDeltas, float $carryKg): array
+function supply_cum_surplus_continuous(mysqli $link, array $weekSlice, bool $withRotation = true): array
 {
-    $cum = $carryKg;
+    if (!$weekSlice) {
+        return [];
+    }
+    $horizonEnd = $weekSlice[count($weekSlice) - 1]['week'];
+    $firstWeek = $weekSlice[0]['week'];
+    $invRows = supply_inventory_surplus_rows($link, $horizonEnd);
+    $invByWeek = [];
+    $lastInv = 0.0;
+    foreach ($invRows as $r) {
+        $invByWeek[$r['week_start_date']] = (float)$r['surplus_kg'];
+        if ($r['week_start_date'] < $firstWeek) {
+            $lastInv = (float)$r['surplus_kg'];
+        }
+    }
+
     $out = [];
-    foreach ($weekDeltas as $v) {
-        $cum = round($cum + (float)$v, 1);
-        $out[] = $cum;
+    $rotPlanCum = 0.0;
+    foreach ($weekSlice as $w) {
+        $wk = $w['week'];
+        if (isset($invByWeek[$wk])) {
+            $lastInv = $invByWeek[$wk];
+        }
+        if ($withRotation) {
+            $rotPlanCum += (float)($w['planned_kg'] ?? 0) + (float)($w['rotation_kg'] ?? 0);
+        }
+        $out[] = round($lastInv + $rotPlanCum, 1);
     }
     return $out;
 }
 
 /**
- * トレンド平準化シミュレーション
- * アラート直載せの跳ねを均し、開始〜levelEnd まで一定の上げ／下げを維持する。
+ * トレンド平準化シミュレーション（一時は使わない）
+ * 数か月の増減合計を期間で均し、strength で弱/強を切り替える。
  *
  * @param list<array{week:string,gcal_kg?:float,ship_kg?:float}> $weekRows
  * @param list<array> $actions
- * @return array{series:list<float>,per_week:float,level_end:string,mode:string,note:string}
+ * @param float $strength 1.0=強（満額） / 0.5=弱
+ * @return array{series:list<float>,per_week:float,level_end:string,mode:string,note:string,strength:float}
  */
-function supply_sim_level_series(array $weekRows, array $actions, ?string $levelEndWeek = null): array
+function supply_sim_level_series(array $weekRows, array $actions, ?string $levelEndWeek = null, float $strength = 1.0): array
 {
-    $raw = supply_sim_commit_series($weekRows, $actions);
+    $raw = supply_sim_commit_series($weekRows, $actions, 'trend');
     $n = count($weekRows);
     $gcals = [];
     foreach ($weekRows as $w) {
@@ -492,9 +717,11 @@ function supply_sim_level_series(array $weekRows, array $actions, ?string $level
             'level_end' => '',
             'mode' => 'level',
             'note' => 'データなし',
+            'strength' => $strength,
         ];
     }
 
+    $strength = max(0.1, min(1.0, $strength));
     $extraTotal = 0.0;
     $deficitTotal = 0.0;
     $firstPos = null;
@@ -534,38 +761,44 @@ function supply_sim_level_series(array $weekRows, array $actions, ?string $level
     $out = $gcals;
     $perWeek = 0.0;
     $noteParts = [];
+    $label = $strength < 0.99 ? '弱' : '強';
 
     if ($firstPos !== null && $extraTotal > 0) {
         $start = $firstPos;
+        if ($endIdx < $start) {
+            $endIdx = $n - 1;
+        }
         $len = max(1, $endIdx - $start + 1);
-        $perWeek = round($extraTotal / $len, 1);
+        $perWeek = round($extraTotal / $len * $strength, 1);
         for ($i = $start; $i <= $endIdx; $i++) {
             $out[$i] = round($gcals[$i] + $perWeek, 1);
         }
-        // 平準化期間後も「上げたまま」を維持
         for ($i = $endIdx + 1; $i < $n; $i++) {
             $out[$i] = round($gcals[$i] + $perWeek, 1);
         }
         $noteParts[] = sprintf(
-            '拡大を平準化: %s〜%s 週あたり +%.0fkg（合計%.0fkgを均し、その先も維持）',
-            date('n/j', strtotime((string)$weekRows[$start]['week'])),
-            date('n/j', strtotime((string)$weekRows[$endIdx]['week'])),
-            $perWeek,
-            $extraTotal
+            '拡大を平準化（%s）: %s〜%s 週あたり +%.0fkg',
+            $label,
+            format_sunday_week((string)$weekRows[$start]['week']),
+            format_sunday_week((string)$weekRows[$endIdx]['week']),
+            $perWeek
         );
     }
 
     if ($firstNeg !== null && $deficitTotal > 0) {
         $start = $firstNeg;
+        if ($endIdx < $start) {
+            $endIdx = $n - 1;
+        }
         $len = max(1, $endIdx - $start + 1);
-        $negPer = round($deficitTotal / $len, 1);
+        $negPer = round($deficitTotal / $len * $strength, 1);
         for ($i = $start; $i <= $endIdx; $i++) {
             $out[$i] = round(max(0.0, $out[$i] - $negPer), 1);
         }
         for ($i = $endIdx + 1; $i < $n; $i++) {
             $out[$i] = round(max(0.0, $out[$i] - $negPer), 1);
         }
-        $noteParts[] = sprintf('絞りを平準化: 週あたり −%.0fkg', $negPer);
+        $noteParts[] = sprintf('絞りを平準化（%s）: 週あたり −%.0fkg', $label, $negPer);
         if ($perWeek == 0.0) {
             $perWeek = -$negPer;
         }
@@ -581,22 +814,220 @@ function supply_sim_level_series(array $weekRows, array $actions, ?string $level
         'level_end' => (string)$weekRows[$endIdx]['week'],
         'mode' => 'level',
         'note' => implode(' · ', $noteParts),
+        'strength' => $strength,
     ];
+}
+
+/**
+ * 定植計画に対する遅れ（収穫後猶予を過ぎた未実施）
+ *
+ * @return list<array{
+ *   bed_id:int,bed_name:string,planned_plant_date:?string,last_end:?string,
+ *   delay_days:int,kind:string,schedule_id:?int
+ * }>
+ */
+function supply_plant_delay_rows(mysqli $link): array
+{
+    $today = date('Y-m-d');
+    $grace = GF_REPLANT_GRACE_DAYS;
+    $rows = [];
+    $seen = [];
+
+    $chk = mysqli_query($link, "SHOW TABLES LIKE 'plant_schedule'");
+    $has = $chk && mysqli_num_rows($chk) > 0;
+    if ($chk) {
+        mysqli_free_result($chk);
+    }
+
+    if ($has) {
+        $sql = "
+SELECT b.id AS bed_id, b.name AS bed_name, s.id AS schedule_id, s.planned_plant_date,
+       (SELECT MAX(c.harvest_end) FROM cycles c WHERE c.bed_id = b.id) AS last_end
+FROM beds b
+JOIN plant_schedule s ON s.bed_id = b.id AND s.status IN ('planned','approved')
+WHERE b.active = 1
+  AND s.planned_plant_date < ?
+  AND NOT EXISTS (
+    SELECT 1 FROM cycles c2 WHERE c2.bed_id = b.id AND c2.harvest_end IS NULL
+  )
+ORDER BY s.planned_plant_date ASC, b.name ASC
+";
+        $stmt = mysqli_prepare($link, $sql);
+        mysqli_stmt_bind_param($stmt, 's', $today);
+        mysqli_stmt_execute($stmt);
+        $res = mysqli_stmt_get_result($stmt);
+        while ($row = mysqli_fetch_assoc($res)) {
+            $bedId = (int)$row['bed_id'];
+            if (isset($seen[$bedId])) {
+                continue;
+            }
+            $planned = (string)$row['planned_plant_date'];
+            $last = $row['last_end'];
+            // 運営指標は空き後の猶予超過（予定日との差ではない）
+            if ($last) {
+                $due = date('Y-m-d', strtotime($last . ' +' . $grace . ' days'));
+                $delay = (int)floor((strtotime($today) - strtotime($due)) / 86400);
+            } else {
+                $delay = (int)floor((strtotime($today) - strtotime($planned)) / 86400);
+            }
+            if ($delay < 1) {
+                continue;
+            }
+            $rows[] = [
+                'bed_id' => $bedId,
+                'bed_name' => (string)$row['bed_name'],
+                'planned_plant_date' => $planned,
+                'last_end' => $last,
+                'delay_days' => $delay,
+                'kind' => 'late_schedule',
+                'schedule_id' => (int)$row['schedule_id'],
+            ];
+            $seen[$bedId] = true;
+        }
+        mysqli_stmt_close($stmt);
+    }
+
+    $sqlEmpty = "
+SELECT b.id AS bed_id, b.name AS bed_name,
+       (SELECT MAX(c.harvest_end) FROM cycles c WHERE c.bed_id = b.id) AS last_end
+FROM beds b
+WHERE b.active = 1
+  AND NOT EXISTS (SELECT 1 FROM cycles c WHERE c.bed_id = b.id AND c.harvest_end IS NULL)
+";
+    $res = mysqli_query($link, $sqlEmpty);
+    if ($res) {
+        while ($row = mysqli_fetch_assoc($res)) {
+            $bedId = (int)$row['bed_id'];
+            if (isset($seen[$bedId])) {
+                continue;
+            }
+            $last = $row['last_end'];
+            if (!$last) {
+                continue;
+            }
+            $due = date('Y-m-d', strtotime($last . ' +' . $grace . ' days'));
+            if ($due >= $today) {
+                continue;
+            }
+            $delay = (int)floor((strtotime($today) - strtotime($due)) / 86400);
+            if ($delay < 1) {
+                continue;
+            }
+            $rows[] = [
+                'bed_id' => $bedId,
+                'bed_name' => (string)$row['bed_name'],
+                'planned_plant_date' => $due,
+                'last_end' => $last,
+                'delay_days' => $delay,
+                'kind' => 'idle_empty',
+                'schedule_id' => null,
+            ];
+            $seen[$bedId] = true;
+        }
+        mysqli_free_result($res);
+    }
+
+    usort($rows, static function ($a, $b) {
+        return ($b['delay_days'] <=> $a['delay_days']) ?: strcmp($a['bed_name'], $b['bed_name']);
+    });
+    return $rows;
+}
+
+function supply_week_is_cold_season(string $week): bool
+{
+    $m = (int)date('n', strtotime($week));
+    return $m >= 10 || $m <= 2;
+}
+
+/**
+ * 計画累計から見て、その週の余りを先の拡大として話してよいか。
+ * 当週バッファの放出とは別。後週の計画累計が割れないこと。
+ */
+function supply_plan_can_recommend_expand(array $withRot, string $week, float $releaseKg): bool
+{
+    $from = false;
+    $weekDelta = null;
+    $minCum = null;
+    foreach ($withRot as $w) {
+        if ((string)($w['week'] ?? '') === $week) {
+            $from = true;
+            $weekDelta = (float)($w['week_delta_kg'] ?? 0);
+        }
+        if (!$from) {
+            continue;
+        }
+        $c = (float)($w['cum_surplus_kg'] ?? 0);
+        if ($minCum === null || $c < $minCum) {
+            $minCum = $c;
+        }
+    }
+    if (!$from || $weekDelta === null || $weekDelta < 80) {
+        return false;
+    }
+    if ($minCum === null || $minCum < $releaseKg) {
+        return false;
+    }
+    return true;
+}
+
+function supply_near_week_cutoff(): string
+{
+    $cur = gcal_week_start_sunday(date('Y-m-d'));
+    return date('Y-m-d', strtotime($cur . ' +' . (GF_PLAN_EXPAND_LEAD_WEEKS - 1) * 7 . ' days'));
+}
+
+/**
+ * 定植済累計から見て、その週のプラスをスポット放出してよいか。
+ * 回転・予定定植の山だけでは放出不可。後週の定植済出荷が割れるなら不可。
+ */
+function supply_planted_can_release_spot(array $openOnly, string $week, float $releaseKg): bool
+{
+    $from = false;
+    $weekDelta = null;
+    $minCum = null;
+    foreach ($openOnly as $w) {
+        if ((string)($w['week'] ?? '') === $week) {
+            $from = true;
+            $weekDelta = (float)($w['week_delta_kg'] ?? 0);
+        }
+        if (!$from) {
+            continue;
+        }
+        $c = (float)($w['cum_surplus_kg'] ?? 0);
+        if ($minCum === null || $c < $minCum) {
+            $minCum = $c;
+        }
+    }
+    if (!$from || $weekDelta === null || $weekDelta < 80) {
+        return false;
+    }
+    if ($minCum === null || $minCum < $releaseKg) {
+        return false;
+    }
+    return true;
 }
 
 /**
  * 週次デルタを一時/トレンドに分類し、営業トークを付与
  *
- * @param list<array> $cumWeeks trust_attach_cumulative 結果
- * @return array{spot:list,trends:list,actions:list,grace_days:int}
+ * @param list<array> $cumWeeks trust_attach_cumulative 結果（回転込み）
+ * @param list<array>|null $openOnly 定植済のみ。null ならここで作る
+ * @return array{spot:list,trends:list,actions:list,grace_days:int,plant_delays:list}
  */
-function supply_classify_surplus_deficit(mysqli $link, array $cumWeeks): array
+function supply_classify_surplus_deficit(mysqli $link, array $cumWeeks, ?array $openOnly = null): array
 {
+    if ($openOnly === null) {
+        $openOnly = trust_cumulative_open_only($link, max(16, count($cumWeeks) + 2));
+    }
     $grace = supply_pred_harvest_grace_days($link);
+    $delays = supply_plant_delay_rows($link);
+    $delayN = count($delays);
+    $plantExecLate = $delayN;
     $spot = [];
     $trends = [];
+    $nearCutoff = supply_near_week_cutoff();
 
-    // --- トレンド: 同符号の週次デルタが連続 GF_TREND_MIN_WEEKS 以上 ---
+    // --- トレンド: 拡大は4週、減少は3週から（低温期を早めに） ---
     $n = count($cumWeeks);
     $i = 0;
     while ($i < $n) {
@@ -626,7 +1057,8 @@ function supply_classify_surplus_deficit(mysqli $link, array $cumWeeks): array
             $end--;
         }
         $len = $end - $i + 1;
-        if ($len >= GF_TREND_MIN_WEEKS) {
+        $needLen = $sign < 0 ? GF_TREND_TIGHTEN_MIN_WEEKS : GF_TREND_MIN_WEEKS;
+        if ($len >= $needLen) {
             $deltas = [];
             for ($k = $i; $k <= $end; $k++) {
                 $deltas[] = (float)$cumWeeks[$k]['week_delta_kg'];
@@ -636,19 +1068,29 @@ function supply_classify_surplus_deficit(mysqli $link, array $cumWeeks): array
             $start = $cumWeeks[$i]['week'];
             $finish = $cumWeeks[$end]['week'];
             $type = $sign > 0 ? 'trend_expand' : 'trend_tighten';
-            $label = $sign > 0 ? 'ベース栽培量の拡大トレンド' : 'ベース栽培量の減少トレンド';
+            $cold = $sign < 0 && supply_week_is_cold_season($start);
+            $label = $sign > 0
+                ? '計画どおりなら出荷拡大'
+                : ($cold ? '低温期の減少を先行察知' : 'ベース栽培量の減少トレンド');
             $talk = $sign > 0
                 ? sprintf(
-                    '%s週から、週あたり＋%.0fkgでの対応が可能となります。いかがですか？',
+                    '%sから、週あたり＋%.0fkgでの対応が可能となります。いかがですか？',
                     supply_week_label($start),
                     $perWeek
                 )
                 : sprintf(
-                    '%s週から、週あたり−%.0fkgでの対応となります。ご調整お願いします。',
+                    '%sから、週あたり−%.0fkgでの対応となります。ご調整お願いします。',
                     supply_week_label($start),
                     $perWeek
                 );
-            $short = supply_week_label($start) . ' ' . ($sign > 0 ? '+' : '−') . (int)$perWeek . 'kg';
+            $short = supply_alert_short_line([
+                'kind' => 'trend',
+                'type' => $type,
+                'start_week' => $start,
+                'end_week' => $finish,
+                'weeks' => $len,
+                'kg_per_week' => $perWeek,
+            ]);
             $trends[] = [
                 'kind' => 'trend',
                 'type' => $type,
@@ -661,10 +1103,15 @@ function supply_classify_surplus_deficit(mysqli $link, array $cumWeeks): array
                 'total_kg' => round($perWeek * $len, 0),
                 'label' => $label,
                 'detail' => sprintf(
-                    '%s〜%s（%d週間連続）。一時変動ではなくベースの増減。仲卸には数か月見通しとして先行共有。',
+                    '%s〜%s（%d週間連続・計画ライン）。%s',
                     supply_week_label($start),
                     supply_week_label($finish),
-                    $len
+                    $len,
+                    $sign > 0
+                        ? '定植が計画どおりなら拡大を先行提案。当週の定植済バッファは売らない。'
+                        : ($cold
+                            ? '低温期に向かう減少。割れを待たず仲卸へ先に伝達。'
+                            : '一時変動ではなくベース減。仲卸には数か月見通しとして先行共有。')
                 ),
                 'sales_talk' => $talk,
                 'short_line' => $short,
@@ -685,6 +1132,7 @@ function supply_classify_surplus_deficit(mysqli $link, array $cumWeeks): array
         }
     }
 
+    $planExpandN = 0;
     foreach ($cumWeeks as $idx => $w) {
         $week = $w['week'];
         if (isset($covered[$week])) {
@@ -694,41 +1142,92 @@ function supply_classify_surplus_deficit(mysqli $link, array $cumWeeks): array
         if ($delta < 80) {
             continue;
         }
-        // この週のオープン収穫が「猶予日以内」に来る／来ているか
-        $nearHarvestKg = supply_open_harvest_kg_within_days($link, $week, $grace);
-        if ($nearHarvestKg < 40 && (float)($w['open_kg'] ?? 0) < 40) {
-            // 近い収穫が薄い一時山は軽め
-            if ($delta < 120) {
+        $isNear = $week <= $nearCutoff;
+
+        if ($isNear) {
+            $openDelta = null;
+            foreach ($openOnly as $ow) {
+                if ((string)($ow['week'] ?? '') === $week) {
+                    $openDelta = (float)($ow['week_delta_kg'] ?? 0);
+                    break;
+                }
+            }
+            $releaseKg = $openDelta !== null ? min($delta, $openDelta) : $delta;
+            // 当週〜翌々週は定植済バッファを売らない（9月の持ち越しを放出しない）
+            if (!supply_planted_can_release_spot($openOnly, $week, max($releaseKg, 80))) {
                 continue;
             }
+            $delta = $releaseKg;
+            $nearHarvestKg = supply_open_harvest_kg_within_days($link, $week, $grace);
+            if ($nearHarvestKg < 40 && (float)($w['open_kg'] ?? 0) < 40) {
+                if ($delta < 120) {
+                    continue;
+                }
+            }
+            $spot[] = [
+                'kind' => 'spot',
+                'type' => 'spot_surplus',
+                'urgency' => 'warn',
+                'priority' => 70,
+                'start_week' => $week,
+                'end_week' => $week,
+                'weeks' => 1,
+                'kg_per_week' => round($delta, 0),
+                'total_kg' => round($delta, 0),
+                'label' => '一時的余剰（廃棄リスク）',
+                'detail' => sprintf(
+                    '%sに約%.0fkgの一時的余剰発生 ⇒ 廃棄リスク有（収穫猶予%d日以内の山）。スポット営業を実施。',
+                    supply_week_label($week),
+                    $delta,
+                    $grace
+                ),
+                'sales_talk' => sprintf(
+                    '%sに一時的に約%.0fkgの余剰が見込まれます。スポットでの販路検討をお願いします。',
+                    supply_week_label($week),
+                    $delta
+                ),
+                'short_line' => supply_week_label($week) . ' +' . (int)round($delta, 0) . 'kg',
+                'grace_days' => $grace,
+                'near_harvest_kg' => $nearHarvestKg,
+            ];
+            continue;
         }
-        // 前後がトレンド未満ならスポット
-        $spot[] = [
-            'kind' => 'spot',
-            'type' => 'spot_surplus',
-            'urgency' => 'warn',
-            'priority' => 70,
+
+        // 先々: 計画ラインの余り。定植遅れが多ければ拡大は出さない
+        if ($plantExecLate >= 3) {
+            continue;
+        }
+        if ($planExpandN >= 6) {
+            continue;
+        }
+        if (!supply_plan_can_recommend_expand($cumWeeks, $week, $delta)) {
+            continue;
+        }
+        $planExpandN++;
+        $trends[] = [
+            'kind' => 'trend',
+            'type' => 'trend_expand',
+            'urgency' => 'ok',
+            'priority' => 45,
             'start_week' => $week,
             'end_week' => $week,
             'weeks' => 1,
             'kg_per_week' => round($delta, 0),
             'total_kg' => round($delta, 0),
-            'label' => '一時的余剰（廃棄リスク）',
+            'label' => '計画上の拡大チャンス',
             'detail' => sprintf(
-                '%sに約%.0fkgの一時的余剰発生 ⇒ 廃棄リスク有（収穫猶予%d日以内の山）。スポット営業を実施。',
-                supply_week_label($week),
-                $delta,
-                $grace
-            ),
-            'sales_talk' => sprintf(
-                '%sに一時的に約%.0fkgの余剰が見込まれます。スポットでの販路検討をお願いします。',
+                '%sは計画どおりに定植が回れば約%.0fkgの余り。先行商談可。いまの畑の在庫ではない。',
                 supply_week_label($week),
                 $delta
             ),
-            'short_line' => supply_week_label($week) . ' +' . (int)round($delta, 0) . 'kg（一時）',
-            'grace_days' => $grace,
-            'near_harvest_kg' => $nearHarvestKg,
+            'sales_talk' => sprintf(
+                '%sから、週あたり＋%.0fkgでの対応が可能となります。いかがですか？',
+                supply_week_label($week),
+                $delta
+            ),
+            'short_line' => supply_week_label($week) . ' +' . (int)round($delta, 0) . 'kg',
         ];
+        $covered[$week] = true;
     }
 
     // 在庫割れがある場合の減少トレンドが無ければ、割れ起点のtightenを補完
@@ -737,7 +1236,7 @@ function supply_classify_surplus_deficit(mysqli $link, array $cumWeeks): array
     if ($sum['first_break_week'] && !$hasTighten) {
         $idx = (int)$sum['first_break_index'];
         $startIdx = max(0, $idx - 1);
-        $endIdx = min($n - 1, $startIdx + max(GF_TREND_MIN_WEEKS, 6) - 1);
+        $endIdx = min($n - 1, $startIdx + max(GF_TREND_TIGHTEN_MIN_WEEKS, 6) - 1);
         $need = max(30.0, -$sum['min_cum_kg'] / max(1, $endIdx - $startIdx + 1));
         $start = $cumWeeks[$startIdx]['week'];
         $finish = $cumWeeks[$endIdx]['week'];
@@ -758,16 +1257,94 @@ function supply_classify_surplus_deficit(mysqli $link, array $cumWeeks): array
                 supply_week_label($sum['first_break_week'])
             ),
             'sales_talk' => sprintf(
-                '%s週から、週あたり−%.0fkgでの対応となります。ご調整お願いします。',
+                '%sから、週あたり−%.0fkgでの対応となります。ご調整お願いします。',
                 supply_week_label($start),
                 $perWeek
             ),
-            'short_line' => supply_week_label($start) . ' −' . (int)$perWeek . 'kg',
+            'short_line' => '',
             'break_week' => $sum['first_break_week'],
         ];
+        $hasTighten = true;
     }
 
-    // 画面表示は時系列（開始週昇順）。同週なら減少を先に
+    // 計画能力そのものが連続して落ちる（開始週が低温期なら詳細にだけ書く）
+    $earliestTighten = null;
+    foreach ($trends as $t) {
+        if (($t['type'] ?? '') === 'trend_tighten') {
+            if ($earliestTighten === null || $t['start_week'] < $earliestTighten) {
+                $earliestTighten = $t['start_week'];
+            }
+        }
+    }
+    $dropStart = null;
+    $dropEnd = null;
+    $dropKg = [];
+    for ($k = 2; $k < $n; $k++) {
+        $prevCap = (float)($cumWeeks[$k - 1]['capacity_kg'] ?? 0);
+        $cap = (float)($cumWeeks[$k]['capacity_kg'] ?? 0);
+        $drop = $prevCap - $cap;
+        if ($drop >= 40) {
+            if ($dropStart === null) {
+                $dropStart = $k;
+            }
+            $dropEnd = $k;
+            $dropKg[] = $drop;
+        } elseif ($dropStart !== null) {
+            break;
+        }
+    }
+    if ($dropStart !== null && $dropEnd !== null) {
+        $dropLen = $dropEnd - $dropStart + 1;
+        $startW = $cumWeeks[$dropStart]['week'];
+        $endW = $cumWeeks[$dropEnd]['week'];
+        $cold = supply_week_is_cold_season($startW);
+        $want = ($cold && $dropLen >= 2) || $dropLen >= 3;
+        $earlier = $earliestTighten === null || $startW < $earliestTighten;
+        if ($want && $earlier) {
+            $perWeek = round(array_sum($dropKg) / max(1, count($dropKg)), 0);
+            $row = [
+                'kind' => 'trend',
+                'type' => 'trend_tighten',
+                'urgency' => 'critical',
+                'priority' => 105,
+                'start_week' => $startW,
+                'end_week' => $endW,
+                'weeks' => $dropLen,
+                'kg_per_week' => $perWeek,
+                'total_kg' => round($perWeek * $dropLen, 0),
+                'label' => $cold ? '低温期の能力減少を先行察知' : '計画能力の減少トレンド',
+                'detail' => $cold
+                    ? sprintf('計画能力が%sから連続して落ちる。低温期の減として仲卸へ先に伝達。', supply_week_label($startW))
+                    : sprintf('計画能力が%s〜%sで連続して落ちる。一時ではなくトレンド。', supply_week_label($startW), supply_week_label($endW)),
+                'sales_talk' => sprintf(
+                    '%sから、週あたり−%.0fkgでの対応となります。ご調整お願いします。',
+                    supply_week_label($startW),
+                    $perWeek
+                ),
+            ];
+            $row['short_line'] = supply_alert_short_line($row);
+            $trends[] = $row;
+        }
+    }
+
+    $trends = supply_merge_consecutive_trends($trends);
+    foreach ($trends as &$t) {
+        if (!supply_trend_kind_is_tighten($t)) {
+            continue;
+        }
+        $an = supply_tighten_cover_analysis(
+            $link,
+            $cumWeeks,
+            (string)$t['start_week'],
+            (string)$t['end_week']
+        );
+        $t['cover'] = $an;
+        if ($an['covered']) {
+            $t['urgency'] = 'warn';
+        }
+        $t['short_line'] = supply_alert_short_line($t);
+    }
+    unset($t);
     usort($trends, static function ($a, $b) {
         $c = strcmp($a['start_week'], $b['start_week']);
         if ($c !== 0) {
@@ -780,6 +1357,51 @@ function supply_classify_surplus_deficit(mysqli $link, array $cumWeeks): array
     });
 
     $actions = [];
+    foreach ($delays as $d) {
+        $planned = (string)($d['planned_plant_date'] ?? date('Y-m-d'));
+        $lastEnd = $d['last_end'] ?? null;
+        $wk = gcal_week_start_sunday($planned);
+        $kindLabel = '定植遅れ';
+        $emptyDays = null;
+        if ($lastEnd) {
+            $emptyDays = (int)floor((strtotime(date('Y-m-d')) - strtotime((string)$lastEnd)) / 86400);
+        }
+        $detail = $emptyDays !== null
+            ? sprintf(
+                '%s は空き%d日（猶予%d日を %d日超過）。空き後%d日以内の定植が崩れると、先の計画能力が届かない。',
+                $d['bed_name'],
+                $emptyDays,
+                GF_REPLANT_GRACE_DAYS,
+                (int)$d['delay_days'],
+                GF_REPLANT_GRACE_DAYS
+            )
+            : sprintf(
+                '%s は定植が %d日遅れ。収穫後%d日以内の定植が崩れると、先の計画能力が届かない。',
+                $d['bed_name'],
+                (int)$d['delay_days'],
+                GF_REPLANT_GRACE_DAYS
+            );
+        $actions[] = [
+            'type' => 'plant_delay',
+            'kind' => 'exec',
+            'urgency' => ((int)$d['delay_days'] >= 3) ? 'critical' : 'warn',
+            'start_week' => $wk,
+            'end_week' => $wk,
+            'weeks' => 1,
+            'kg_per_week' => 0,
+            'total_kg' => 0,
+            'label' => $kindLabel,
+            'detail' => $detail,
+            'sales_talk' => '',
+            'short_line' => $emptyDays !== null
+                ? sprintf('%s 空き%d日（猶予超過）', $d['bed_name'], $emptyDays)
+                : sprintf('%s 定植 %d日遅れ', $d['bed_name'], (int)$d['delay_days']),
+            'break_week' => null,
+            'runway_weeks' => $sum['runway_weeks'],
+            'bed_id' => (int)$d['bed_id'],
+            'delay_days' => (int)$d['delay_days'],
+        ];
+    }
     foreach ($trends as $t) {
         $actions[] = [
             'type' => $t['type'] === 'trend_expand' ? 'commit_expand' : 'commit_tighten',
@@ -796,6 +1418,7 @@ function supply_classify_surplus_deficit(mysqli $link, array $cumWeeks): array
             'short_line' => $t['short_line'] ?? supply_alert_short_line($t),
             'break_week' => $t['break_week'] ?? null,
             'runway_weeks' => $sum['runway_weeks'],
+            'cover' => $t['cover'] ?? null,
         ];
     }
     foreach (array_slice($spot, 0, 5) as $s) {
@@ -817,6 +1440,11 @@ function supply_classify_surplus_deficit(mysqli $link, array $cumWeeks): array
         ];
     }
     usort($actions, static function ($a, $b) {
+        $ka = ($a['kind'] ?? '') === 'exec' ? 0 : 1;
+        $kb = ($b['kind'] ?? '') === 'exec' ? 0 : 1;
+        if ($ka !== $kb) {
+            return $ka <=> $kb;
+        }
         $c = strcmp($a['start_week'], $b['start_week']);
         if ($c !== 0) {
             return $c;
@@ -832,20 +1460,13 @@ function supply_classify_surplus_deficit(mysqli $link, array $cumWeeks): array
         'actions' => $actions,
         'grace_days' => $grace,
         'summary' => $sum,
+        'plant_delays' => $delays,
     ];
 }
 
 function supply_week_label(string $week): string
 {
-    $ts = strtotime($week);
-    if ($ts === false) {
-        return $week;
-    }
-    // n月 w週（日曜始まりの月内週）
-    $m = (int)date('n', $ts);
-    $d = (int)date('j', $ts);
-    $w = (int)ceil($d / 7);
-    return sprintf('%d月%d週', $m, $w);
+    return format_sunday_week($week, $week);
 }
 
 /**
@@ -944,7 +1565,9 @@ function supply_agent_snapshot(mysqli $link): array
     supply_ensure_full_rotation($link);
 
     $trust = trust_outlook_bundle($link, 20);
-    $classified = supply_classify_surplus_deficit($link, $trust['with_rotation']);
+    $classified = supply_classify_surplus_deficit($link, $trust['with_rotation'], $trust['open_only']);
+    $delays = $classified['plant_delays'] ?? [];
+    $delayN = count($delays);
     $sum = capacity_outlook_summary($link);
     $empty = count(plant_schedule_empty_beds($link));
     $staff = staff_auto_recommendations($link);
@@ -996,11 +1619,17 @@ function supply_agent_snapshot(mysqli $link): array
 
     $health = 'ok';
     $notes = [];
-    if ($empty > 0) {
-        $notes[] = "空きベッド {$empty} — 常時回転で計画投入済みか確認";
+    if ($delayN > 0) {
+        $health = $delayN >= 3 ? 'critical' : 'warn';
+        $notes[] = "定植遅れ {$delayN} ベッド — 計画能力が先で届かなくなる";
     }
-    if ($sum['zero_weeks'] > 0) {
+    if ($empty > 0) {
+        $notes[] = "空きベッド {$empty} — 常時回転の次定植は自動投入。現場が植える";
+    }
+    if ($sum['zero_weeks'] > 0 && $health === 'ok') {
         $health = 'warn';
+        $notes[] = "能力0の週が {$sum['zero_weeks']} — 回転シミュレーションを点検";
+    } elseif ($sum['zero_weeks'] > 0) {
         $notes[] = "能力0の週が {$sum['zero_weeks']} — 回転シミュレーションを点検";
     }
     if ($trust['summary']['status'] === 'critical') {
@@ -1034,6 +1663,7 @@ function supply_agent_snapshot(mysqli $link): array
             'runway_weeks' => $trust['summary']['runway_weeks'],
             'trust_status' => $trust['summary']['status'],
             'empty_beds' => $empty,
+            'plant_delay_n' => $delayN,
             'zero_capacity_weeks' => $sum['zero_weeks'],
             'overgrow_beds' => $riskN,
             'staff_alerts' => count($staff),
@@ -1042,12 +1672,14 @@ function supply_agent_snapshot(mysqli $link): array
             'pred_mae_kg' => $mae,
             'pred_mape_pct' => $mape,
             'pred_eval_n' => $nEval,
+            'first_break_week' => $trust['summary']['first_break_week'],
             'grace_days' => $classified['grace_days'],
             'yoy_miss_weeks' => $sum['yoy_miss_weeks'],
         ],
         'trends' => $classified['trends'],
         'spot' => $classified['spot'],
         'actions' => $classified['actions'],
+        'plant_delays' => $delays,
         'seasonal' => $season,
         'dual_lines_sample' => array_slice(supply_dual_week_lines($link, 8), 0, 8),
     ];
