@@ -147,7 +147,7 @@ $wd = ['日','月','火','水','木','金','土'][(int)date('w')];
   <div class="gf-header">
     <div>
       <h1 class="page-title">今日の作業</h1>
-      <p class="page-sub"><?= htmlspecialchars(date('n月j日', strtotime($today)) . "（{$wd}）", ENT_QUOTES, 'UTF-8') ?> · 収穫後<?= (int)GF_REPLANT_GRACE_DAYS ?>日以内の次定植は自動で入る。遅れを消化する</p>
+      <p class="page-sub"><?= htmlspecialchars(date('n月j日', strtotime($today)) . "（{$wd}）", ENT_QUOTES, 'UTF-8') ?> · 今日やる定植・収穫・破棄。空きは<?= (int)GF_REPLANT_GRACE_DAYS ?>日以内に次定植</p>
     </div>
   </div>
 
@@ -175,6 +175,7 @@ $wd = ['日','月','火','水','木','金','土'][(int)date('w')];
   </div>
 
   <h2 id="sec-plant" class="section-title"><?= gf_icon('plant') ?> 今日の定植</h2>
+  <p class="page-sub mb-2">基準は空き日数。<?= (int)GF_REPLANT_GRACE_DAYS ?>日超は遅れ。</p>
   <?php if (!$hasSchedule): ?>
     <p class="text-muted small">定植計画未設定。<a href="plan.php">計画画面</a>へ</p>
   <?php elseif (!$plantJobs): ?>
@@ -211,6 +212,7 @@ $wd = ['日','月','火','水','木','金','土'][(int)date('w')];
   <?php endif; ?>
 
   <h2 id="sec-harvest" class="section-title"><?= gf_icon('harvest') ?> 今日の収穫候補</h2>
+  <p class="page-sub mb-2">予測日到達または収穫中。入力して実績を残す。</p>
   <?php if (!$harvestJobs): ?>
     <div class="job-card"><div class="job-meta">予測日到達・収穫中のベッドはありません</div></div>
   <?php else: ?>
@@ -237,6 +239,7 @@ $wd = ['日','月','火','水','木','金','土'][(int)date('w')];
 
   <?php if ($nDiscard > 0): ?>
   <h2 id="sec-discard" class="section-title"><?= gf_icon('alert') ?> 破棄検討</h2>
+  <p class="page-sub mb-2">床を空けて次定植へ。異常一覧は <a href="alerts.php">経営アラート</a>。</p>
   <p class="page-sub mb-2">判断・実行は需給へ。</p>
   <div class="job-grid">
     <?php foreach (array_slice($discardJobs, 0, 5) as $d): ?>

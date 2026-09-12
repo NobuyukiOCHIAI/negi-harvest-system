@@ -43,7 +43,7 @@ require_once __DIR__ . '/lib/nav.php';
   </div>
 
   <h2 class="section-title"><?= gf_icon('alert') ?> 品質・振り返り</h2>
-  <p class="page-sub mb-2">遅れ・昨対・生育。診断・基盤はここ。</p>
+  <p class="page-sub mb-2">診断・基盤（週次〜）。前面の毎日作業ではない。</p>
   <div class="list-group quick-links rounded-3 overflow-hidden shadow-sm mb-4">
     <a class="list-group-item list-group-item-action" href="overgrow.php"><?= gf_icon('alert', 'ql-ico') ?>過栽培<?= gf_icon('arrow', 'ql-chevron') ?></a>
     <a class="list-group-item list-group-item-action" href="weather.php"><?= gf_icon('chart', 'ql-ico') ?>気温比較<?= gf_icon('arrow', 'ql-chevron') ?></a>

@@ -15,14 +15,35 @@ require_once __DIR__ . '/lib/nav.php';
 require_once __DIR__ . '/lib/plant_schedule.php';
 require_once __DIR__ . '/lib/inventory_trust.php';
 require_once __DIR__ . '/lib/supply_ops.php';
+require_once __DIR__ . '/lib/weather_ops.php';
 
-function week_label_sunday(string $weekStartDate): string
+/** 週カード／表のベッド明細（栽培中=未完了。予定残=有効予測−既収穫。有効予測=⑤postproc優先） */
+function inv_cycle_list_html(array $details): string
 {
-    $ts = strtotime($weekStartDate . ' 12:00:00');
-    if ($ts === false) {
-        return $weekStartDate;
+    $rows = [];
+    foreach ($details as $d) {
+        // forecast_kg = COALESCE(postproc_total_kg, pred_total_kg)。週合計と同じ基準。
+        $pred = (float)($d['forecast_kg'] ?? $d['pred_total_kg'] ?? 0);
+        $got = (float)($d['harvested_kg'] ?? 0);
+        $d['remain_kg'] = max(0, (int)round($pred - $got));
+        $rows[] = $d;
     }
-    return date('Y年n月j日週', $ts);
+    if (!$rows) {
+        return '<p class="text-muted mb-0">未収穫のベッドはありません</p>';
+    }
+    $html = '<table class="inv-cycle-list"><thead><tr>';
+    $html .= '<th>ベッド名</th><th>収穫予定日</th><th class="text-end">収穫予定残</th>';
+    $html .= '</tr></thead><tbody>';
+    foreach ($rows as $d) {
+        $href = 'bed_cycles.php?bed_id=' . (int)$d['bed_id'];
+        $html .= '<tr>';
+        $html .= '<td><a href="' . $href . '">' . htmlspecialchars((string)$d['bed_name'], ENT_QUOTES, 'UTF-8') . '</a></td>';
+        $html .= '<td>' . h_ymd($d['expected_harvest'] ?? null) . '</td>';
+        $html .= '<td class="text-end">' . htmlspecialchars((string)$d['remain_kg'], ENT_QUOTES, 'UTF-8') . 'kg</td>';
+        $html .= '</tr>';
+    }
+    $html .= '</tbody></table>';
+    return $html;
 }
 
 $sync = gcal_ensure_fresh_shipments($link, isset($_GET['force_sync']));
@@ -33,6 +54,7 @@ $horizonEnd = date('Y-m-d', strtotime('+3 months', strtotime($currentWeek)));
 $sql = "
 SELECT
   c.id AS cycle_id,
+  c.bed_id,
   b.name AS bed_name,
   c.plant_date,
   c.harvest_start,
@@ -44,7 +66,8 @@ SELECT
   DATE_SUB(
     DATE_ADD(c.plant_date, INTERVAL CAST(ROUND(pr.pred_days) AS SIGNED) DAY),
     INTERVAL (DAYOFWEEK(DATE_ADD(c.plant_date, INTERVAL CAST(ROUND(pr.pred_days) AS SIGNED) DAY)) - 1) DAY
-  ) AS week_start_date
+  ) AS week_start_date,
+  (SELECT COALESCE(SUM(h.harvest_kg),0) FROM harvests h WHERE h.cycle_id = c.id) AS harvested_kg
 FROM cycles c
 JOIN beds b ON b.id = c.bed_id
 JOIN predictions pr
@@ -55,6 +78,7 @@ JOIN predictions pr
           AND p2.created_at > pr.created_at
      )
 WHERE c.harvest_end IS NULL
+  AND b.active = 1
   AND pr.pred_days IS NOT NULL
 ORDER BY week_start_date ASC, b.name ASC, c.id ASC
 ";
@@ -232,7 +256,7 @@ $chartShip = [];
 $chartSurplus = [];
 $chartCurrentIdx = null;
 foreach (array_slice($rows, 0, 10) as $ci => $cr) {
-    $chartLabels[] = date('n/j', strtotime($cr['week_start_date']));
+    $chartLabels[] = format_sunday_week($cr['week_start_date']);
     $chartFc[] = round((float)$cr['forecast_kg'], 1);
     $chartShip[] = $cr['ship_kg'] === null ? 0 : round((float)$cr['ship_kg'], 1);
     $chartSurplus[] = round((float)$cr['surplus_kg'], 1);
@@ -247,7 +271,7 @@ $shortageWeeks = array_values(array_filter(
 $negSurplusN = count($shortageWeeks);
 $nextShort = $shortageWeeks[0] ?? null;
 $nextShortLabel = $nextShort
-    ? date('n/j', strtotime($nextShort['week_start_date']))
+    ? format_sunday_week($nextShort['week_start_date'])
     : 'なし';
 $nextShortSurplus = $nextShort !== null ? (float)$nextShort['surplus_kg'] : null;
 
@@ -262,7 +286,7 @@ $trustCumLabels = [];
 $trustCumRot = [];
 $trustCumOpen = [];
 foreach (array_slice($trust['with_rotation'], 0, 14) as $tw) {
-    $trustCumLabels[] = date('n/j', strtotime($tw['week']));
+    $trustCumLabels[] = format_sunday_week($tw['week']);
     $trustCumRot[] = (float)$tw['cum_surplus_kg'];
 }
 foreach (array_slice($trust['open_only'], 0, 14) as $tw) {
@@ -274,6 +298,8 @@ $trustStatusClass = [
     'warn' => 'warn',
     'critical' => 'danger',
 ][$trustSum['status']] ?? 'warn';
+$delays = $trust['plant_delays'] ?? [];
+$delayN = count($delays);
 ?>
 <!DOCTYPE html>
 <html lang="ja">
@@ -283,7 +309,7 @@ $trustStatusClass = [
   <meta name="theme-color" content="#1b7a4a">
   <title>収穫予測</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link rel="stylesheet" href="css/mobile-ui.css">
+  <link rel="stylesheet" href="css/mobile-ui.css?v=20260815a">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -291,13 +317,14 @@ $trustStatusClass = [
   <div class="gf-header">
     <div>
       <h1 class="page-title">収穫予測</h1>
-      <p class="page-sub">累計在庫 · 確定出荷=GCAL · <a href="capacity.php">需給</a></p>
+      <p class="page-sub">先の過不足を見通す · 本線は計画どおり定植した場合（緑） · 営業判断は <a href="capacity.php">需給</a></p>
     </div>
     <div class="actions">
       <a class="btn btn-sm btn-outline-primary" href="?force_sync=1">再取込</a>
     </div>
   </div>
 
+  <?= gf_weather_stale_banner_html($link) ?>
   <?php if (!empty($sync['error'])): ?>
     <div class="alert alert-warning py-2">出荷同期失敗: <?= htmlspecialchars($sync['error'], ENT_QUOTES, 'UTF-8') ?></div>
   <?php else: ?>
@@ -309,41 +336,22 @@ $trustStatusClass = [
 
   <div class="job-card mb-3 py-2" style="border-left:4px solid <?= $trustSum['status'] === 'ok' ? 'var(--gf-green)' : ($trustSum['status'] === 'critical' ? 'var(--gf-red)' : 'var(--gf-amber)') ?>">
     <div class="job-meta fw-bold"><?= htmlspecialchars($trustSum['status_label'], ENT_QUOTES, 'UTF-8') ?></div>
-    <div class="job-meta">割れまで <?= (int)$trustSum['runway_weeks'] ?>週（フル） / <?= (int)$trustOpen['runway_weeks'] ?>週（いまの株）</div>
+    <div class="job-meta">計画どおりなら割れまで <?= (int)$trustSum['runway_weeks'] ?>週 · いまの株のまま <?= (int)$trustOpen['runway_weeks'] ?>週<?php if ($delayN): ?> · 定植遅れ <?= (int)$delayN ?>床<?php endif; ?></div>
   </div>
-
-  <?php if ($trustActions): ?>
-    <h2 class="section-title"><?= gf_icon('calendar') ?> 営業アラート</h2>
-    <p class="page-sub mb-2">要約のみ · 交渉・シミュレーションは <a href="capacity.php">需給</a></p>
-    <?php foreach ($trustActions as $a):
-      $isSpot = ($a['kind'] ?? '') === 'spot' || ($a['type'] ?? '') === 'spot_surplus';
-      $isTighten = in_array(($a['type'] ?? ''), ['commit_tighten', 'trend_tighten'], true);
-      $line = $a['short_line'] ?? supply_alert_short_line($a);
-    ?>
-      <div class="job-card py-2 <?= $isTighten || $isSpot ? 'risk' : '' ?>">
-        <div class="fw-bold">
-          <span class="badge <?= $isSpot ? 'bg-warning text-dark' : ($isTighten ? 'bg-danger' : 'bg-success') ?> me-1">
-            <?= $isSpot ? '一時' : 'トレンド' ?>
-          </span>
-          <?= htmlspecialchars($line, ENT_QUOTES, 'UTF-8') ?>
-        </div>
-      </div>
-    <?php endforeach; ?>
-  <?php endif; ?>
 
   <div class="stat-row">
     <div class="stat-card <?= $trustStatusClass ?>">
       <?= gf_icon('alert', 'stat-ico') ?>
       <div class="stat-label">割れまで</div>
       <div class="stat-value"><?= (int)$trustSum['runway_weeks'] ?></div>
-      <div class="stat-sub">週（フル回転）</div>
+      <div class="stat-sub">週（計画実行）</div>
     </div>
-    <div class="stat-card <?= $negSurplusN ? 'danger' : 'ok' ?>">
-      <?= gf_icon('chart', 'stat-ico') ?>
-      <div class="stat-label">週表の累計不足</div>
-      <div class="stat-value"><?= $negSurplusN ?></div>
-      <div class="stat-sub">オープン予測ベース</div>
-    </div>
+    <a href="today.php#sec-plant" class="stat-card stat-link <?= $delayN ? 'danger' : 'ok' ?>">
+      <?= gf_icon('plant', 'stat-ico') ?>
+      <div class="stat-label">定植遅れ</div>
+      <div class="stat-value"><?= (int)$delayN ?></div>
+      <div class="stat-sub">計画より遅いベッド</div>
+    </a>
     <a href="plan.php" class="stat-card stat-link <?= $plannedN ? 'ok' : ($negSurplusN ? 'warn' : '') ?>">
       <?= gf_icon('plant', 'stat-ico') ?>
       <div class="stat-label">定植予定</div>
@@ -354,23 +362,23 @@ $trustStatusClass = [
 
   <?php if ($trustCumLabels): ?>
   <div class="chart-card">
-    <div class="chart-title">累計在庫の先行き（信頼の核）</div>
+    <div class="chart-title">累計在庫の先行き（本線）</div>
     <div class="chart-wrap tall"><canvas id="trustCumChart"></canvas></div>
-    <p class="page-sub mt-2 mb-0">緑=常時回転込み累計 · 灰=いまの株だけ累計 · ゼロ割れが仲卸への先行交渉ポイント</p>
+    <p class="page-sub mt-2 mb-0">この画面の主チャート。緑=計画どおりに定植した場合 · 灰=いまの畑のまま（植えないと先でゼロに見える＝定植催促。公式予測ではない）。</p>
   </div>
   <?php endif; ?>
 
   <?php if ($chartLabels): ?>
   <div class="chart-card">
-    <div class="chart-title">直近週 · オープン予測 / 残出荷 / 累計余剰</div>
+    <div class="chart-title">直近週 · 定植済予測 / 残出荷 / 累計余剰</div>
     <div class="chart-wrap tall">
       <canvas id="invChart"></canvas>
     </div>
-    <p class="page-sub mt-2 mb-0">破線の累計余剰が本線。能力・シミュレーションは <a href="capacity.php">需給</a>。</p>
+    <p class="page-sub mt-2 mb-0">いま畑に植わっている分。当週のプラスは先の出荷の持ち越し。能力・拡大案は <a href="capacity.php">需給</a>。</p>
   </div>
   <?php endif; ?>
 
-  <h2 class="section-title"><?= gf_icon('chart') ?> 週次明細（オープン予測）</h2>
+  <h2 class="section-title"><?= gf_icon('chart') ?> 週次明細（定植済予測）</h2>
   <!-- モバイル: 週カード -->
   <div class="inv-week-cards mobile-only">
     <?php if (!$rows): ?>
@@ -378,7 +386,6 @@ $trustStatusClass = [
     <?php endif; ?>
     <?php foreach ($rows as $i => $r):
       $sid = 'mw' . $i;
-      $surplusClass = $r['surplus_kg'] < 0 ? 'surplus-neg' : 'surplus-pos';
       $cardCls = $r['is_elapsed'] ? 'elapsed' : '';
       if (!empty($r['is_current'])) {
           $cardCls = trim($cardCls . ' current');
@@ -386,30 +393,28 @@ $trustStatusClass = [
       ?>
       <div class="week-card <?= $cardCls ?>"<?= !empty($r['is_current']) ? ' id="week-current"' : '' ?>>
         <div class="d-flex justify-content-between align-items-start">
-          <div class="wk-title" data-bs-toggle="collapse" data-bs-target="#<?= $sid ?>" style="cursor:pointer">
-            <?= htmlspecialchars(week_label_sunday($r['week_start_date']), ENT_QUOTES, 'UTF-8') ?>
+          <div class="wk-title">
+            <?= h_sunday_week($r['week_start_date']) ?>
             <?php if (!empty($r['is_current'])): ?>
               <span class="badge-this-week">当週</span>
             <?php endif; ?>
           </div>
           <span class="badge-status <?= $r['surplus_kg'] < 0 ? 'late' : 'growing' ?>">
-            余剰 <?= number_format($r['surplus_kg'], 0) ?>
+            余剰 <?= h_num($r['surplus_kg'], 0) ?>
           </span>
         </div>
         <div class="metrics">
-          <div class="metric"><div class="m-label">収穫予測</div><div class="m-val"><?= number_format($r['forecast_kg'], 0) ?>kg</div></div>
+          <div class="metric"><div class="m-label">定植済予測</div><div class="m-val"><?= number_format($r['forecast_kg'], 0) ?>kg</div></div>
           <div class="metric"><div class="m-label">残出荷</div><div class="m-val"><?= $r['ship_kg'] === null ? '—' : number_format($r['ship_kg'], 0) . 'kg' ?></div></div>
-          <div class="metric"><div class="m-label">ベッド</div><div class="m-val"><?= (int)$r['beds_count'] ?></div></div>
+          <button type="button" class="metric metric-tap" data-bs-toggle="collapse" data-bs-target="#<?= $sid ?>"
+            <?= $r['beds_count'] > 0 ? '' : 'disabled' ?> aria-expanded="false" aria-controls="<?= $sid ?>">
+            <div class="m-label">未収穫ベッド</div>
+            <div class="m-val"><?= (int)$r['beds_count'] ?></div>
+          </button>
           <div class="metric"><div class="m-label">平均kg</div><div class="m-val"><?= $r['avg_kg'] === null ? '—' : number_format($r['avg_kg'], 0) ?></div></div>
         </div>
         <div class="collapse mt-2" id="<?= $sid ?>">
-          <?php foreach ($r['details'] as $d): ?>
-            <a class="chip mb-1" href="cycle.php?id=<?= (int)$d['cycle_id'] ?>">
-              <?= htmlspecialchars($d['bed_name'], ENT_QUOTES, 'UTF-8') ?>
-              · <?= number_format((float)$d['forecast_kg'], 0) ?>kg
-            </a>
-          <?php endforeach; ?>
-          <?php if (!$r['details']): ?><span class="text-muted small">明細なし</span><?php endif; ?>
+          <?= inv_cycle_list_html($r['details']) ?>
         </div>
       </div>
     <?php endforeach; ?>
@@ -421,10 +426,10 @@ $trustStatusClass = [
       <thead>
         <tr>
           <th>収穫週</th>
-          <th class="text-end">個数</th>
+          <th class="text-end">未収穫ベッド</th>
           <th class="text-end">平均日</th>
           <th class="text-end">平均kg</th>
-          <th class="text-end">予測</th>
+          <th class="text-end">定植済予測</th>
           <th class="text-end">残出荷</th>
           <th class="text-end">余剰</th>
         </tr>
@@ -432,32 +437,36 @@ $trustStatusClass = [
       <tbody>
       <?php foreach ($rows as $i => $r):
         $sid = 'w' . $i;
-        $surplusClass = $r['surplus_kg'] < 0 ? 'surplus-neg' : 'surplus-pos';
         $rowCls = $r['is_elapsed'] ? 'row-elapsed' : '';
         if (!empty($r['is_current'])) {
             $rowCls = trim($rowCls . ' row-current');
         }
       ?>
         <tr class="<?= $rowCls ?>"<?= !empty($r['is_current']) ? ' id="week-current-desk"' : '' ?>>
-          <td class="week-toggle" data-bs-toggle="collapse" data-bs-target="#<?= $sid ?>" style="cursor:pointer">
-            <?= htmlspecialchars(week_label_sunday($r['week_start_date']), ENT_QUOTES, 'UTF-8') ?>
+          <td class="week-toggle">
+            <?= h_sunday_week($r['week_start_date']) ?>
             <?php if (!empty($r['is_current'])): ?>
               <span class="badge-this-week">当週</span>
             <?php endif; ?>
           </td>
-          <td class="text-end"><?= (int)$r['beds_count'] ?></td>
+          <td class="text-end">
+            <?php if ($r['beds_count'] > 0): ?>
+              <button type="button" class="btn btn-link p-0 fw-bold inv-bed-count" data-bs-toggle="collapse" data-bs-target="#<?= $sid ?>" aria-expanded="false" aria-controls="<?= $sid ?>">
+                <?= (int)$r['beds_count'] ?>
+              </button>
+            <?php else: ?>
+              0
+            <?php endif; ?>
+          </td>
           <td class="text-end"><?= $r['avg_days'] === null ? '—' : number_format($r['avg_days'], 1) ?></td>
           <td class="text-end"><?= $r['avg_kg'] === null ? '—' : number_format($r['avg_kg'], 1) ?></td>
           <td class="text-end fw-semibold"><?= number_format($r['forecast_kg'], 1) ?></td>
           <td class="text-end"><?= $r['ship_kg'] === null ? '—' : number_format($r['ship_kg'], 1) ?></td>
-          <td class="text-end <?= $surplusClass ?>"><?= number_format($r['surplus_kg'], 1) ?></td>
+          <td class="text-end <?= $r['surplus_kg'] < 0 ? 'surplus-neg' : 'surplus-pos' ?>"><?= h_num($r['surplus_kg'], 1) ?></td>
         </tr>
         <tr class="collapse" id="<?= $sid ?>">
           <td colspan="7" class="p-2 bg-light">
-            <?php foreach ($r['details'] as $d): ?>
-              <a href="cycle.php?id=<?= (int)$d['cycle_id'] ?>"><?= htmlspecialchars($d['bed_name'], ENT_QUOTES, 'UTF-8') ?></a>
-              <?= number_format((float)$d['forecast_kg'], 1) ?>kg ·
-            <?php endforeach; ?>
+            <?= inv_cycle_list_html($r['details']) ?>
           </td>
         </tr>
       <?php endforeach; ?>
@@ -477,8 +486,8 @@ $trustStatusClass = [
     data: {
       labels: <?= json_encode($trustCumLabels, JSON_UNESCAPED_UNICODE) ?>,
       datasets: [
-        { label: '累計在庫（常時回転込み）', data: <?= json_encode($trustCumRot) ?>, borderColor: '#1b7a4a', tension: 0.25, fill: false },
-        { label: '累計在庫（いまの株だけ）', data: <?= json_encode($trustCumOpen) ?>, borderColor: '#9e9e9e', borderDash: [5,4], tension: 0.25, fill: false }
+        { label: '累計在庫（計画どおり定植）', data: <?= json_encode($trustCumRot) ?>, borderColor: '#1b7a4a', tension: 0.25, fill: false },
+        { label: '累計在庫（いまの畑のまま）', data: <?= json_encode($trustCumOpen) ?>, borderColor: '#9e9e9e', borderDash: [5,4], tension: 0.25, fill: false }
       ]
     },
     options: {
@@ -502,7 +511,7 @@ $trustStatusClass = [
     data: {
       labels: <?= json_encode($chartLabels, JSON_UNESCAPED_UNICODE) ?>,
       datasets: [
-        { label: '収穫予測', data: <?= json_encode($chartFc) ?>, borderColor: '#1b7a4a', backgroundColor: 'rgba(27,122,74,0.15)', fill: true, tension: 0.25, pointRadius, pointHoverRadius: 7 },
+        { label: '定植済予測', data: <?= json_encode($chartFc) ?>, borderColor: '#1b7a4a', backgroundColor: 'rgba(27,122,74,0.15)', fill: true, tension: 0.25, pointRadius, pointHoverRadius: 7 },
         { label: '残出荷', data: <?= json_encode($chartShip) ?>, borderColor: '#c47a00', backgroundColor: 'rgba(196,122,0,0.12)', fill: true, tension: 0.25, pointRadius: 2 },
         { label: '余剰', data: <?= json_encode($chartSurplus) ?>, borderColor: '#2c5aa0', borderDash: [4,3], tension: 0.25, pointRadius: 2 }
       ]

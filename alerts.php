@@ -83,7 +83,7 @@ $sevClass = [
   <div class="gf-header">
     <div>
       <h1 class="page-title">経営アラート</h1>
-      <p class="page-sub">遅れ・破棄・在庫割れ・気温鮮度。社内用（取引先非開示）</p>
+      <p class="page-sub">異常・要注意にすぐ気づく · 社内用（取引先非開示） · 実績は <a href="actual.php">収量</a></p>
     </div>
   </div>
 

@@ -276,7 +276,7 @@ $isCalendarYear = ($focusYear === (int)date('Y'));
   <div class="gf-header">
     <div>
       <h1 class="page-title">実収穫量</h1>
-      <p class="page-sub">年次比較 · 月次推移</p>
+      <p class="page-sub">経営常時 · ゴミ込みの実力（取引先非開示） · 異常は <a href="alerts.php">経営アラート</a></p>
     </div>
   </div>
 
@@ -290,15 +290,12 @@ $isCalendarYear = ($focusYear === (int)date('Y'));
   </form>
 
   <div class="purpose">
-    <strong>①</strong> 年次比較（グラフ＋月別年次比較）　
-    <strong>②</strong> <?= $focusYear ?>年のなかの月次推移　
-    <strong>③</strong> 月合計収量の年次比較
-    <br>比較年: <?= htmlspecialchars(implode(' / ', $compareYears), ENT_QUOTES, 'UTF-8') ?>
+    <strong>見るもの</strong>：ベッドあたり・月合計（いずれも<strong>ゴミ込み</strong>）の年次比較と月次推移。
+    改善余地は過栽培ロス抑制。比較年: <?= htmlspecialchars(implode(' / ', $compareYears), ENT_QUOTES, 'UTF-8') ?>
     （<span style="color:#c62828;font-weight:800"><?= $focusYear ?><?= $isCalendarYear ? '＝当年' : '＝基準年' ?></span>）
   </div>
   <div class="spec-note">
-    収量の単純アップは難しい前提。改善余地は<strong>過栽培ロス（ゴミ化）の抑制</strong>。
-    定植計画でペースを調整し、過栽培にならない立案を優先します。
+    出荷可能在庫とは別の「実力」。取引先には開示しない。
   </div>
 
   <!-- ① 年次比較 -->
