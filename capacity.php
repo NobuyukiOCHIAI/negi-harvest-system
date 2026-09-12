@@ -266,7 +266,7 @@ $simModeLabel = $simParam === 'level_weak' ? '平準化（弱）'
       <input type="hidden" name="sim" value="<?= htmlspecialchars($simParam, ENT_QUOTES, 'UTF-8') ?>">
       <div>
         <label for="eff">① 実効収量 kg/床</label>
-        <input id="eff" type="number" name="eff" min="40" max="400" step="5"
+        <input id="eff" type="number" name="eff" min="40" max="400" step="1"
                value="<?= $useEff ? $effNow : $sug ?>" placeholder="<?= $sug ?>">
       </div>
       <div>
