@@ -9,6 +9,7 @@ require_once __DIR__ . '/lib/date_display.php';
 require_once __DIR__ . '/lib/plant_schedule.php';
 require_once __DIR__ . '/lib/inventory_trust.php';
 require_once __DIR__ . '/lib/supply_ops.php';
+require_once __DIR__ . '/lib/mgmt_alerts.php';
 
 supply_ensure_full_rotation($link);
 
@@ -48,6 +49,9 @@ if ($hasSchedule) {
 $trust = trust_outlook_bundle($link, 16);
 $trustSum = $trust['summary'];
 $delayN = count($trust['plant_delays'] ?? []);
+$alertBundle = gf_mgmt_alerts_bundle($link, $trust);
+$alertN = (int)$alertBundle['counts']['total'];
+$alertCrit = (int)$alertBundle['counts']['critical'];
 $trustCls = [
     'ok' => 'ok',
     'watch' => 'warn',
@@ -63,7 +67,7 @@ $trustCls = [
   <meta name="theme-color" content="#1b7a4a">
   <title>栽培予測ホーム</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link rel="stylesheet" href="css/mobile-ui.css?v=20260815a">
+  <link rel="stylesheet" href="css/mobile-ui.css?v=20260912b">
 </head>
 <body>
 <div class="container py-3">
@@ -94,18 +98,18 @@ $trustCls = [
     </a>
   </div>
 
-  <h2 class="section-title"><?= gf_icon('chart') ?> 営業</h2>
-  <p class="page-sub mb-2">先行きは予測（計画実行）、調整は需給。中身はそれぞれの画面で。</p>
+  <h2 class="section-title"><?= gf_icon('chart') ?> 営業・経営</h2>
+  <p class="page-sub mb-2">先行き・異常・実績。取引先非開示の経営常時も含む。</p>
   <div class="stat-row mb-2">
     <a href="inventory.php" class="stat-card stat-link <?= $trustCls ?>">
       <div class="stat-label">割れまで</div>
       <div class="stat-value"><?= (int)$trustSum['runway_weeks'] ?></div>
       <div class="stat-sub">週 · 計画</div>
     </a>
-    <a href="capacity.php" class="stat-card stat-link">
-      <div class="stat-label">需給</div>
-      <div class="stat-value" style="font-size:1rem;padding-top:0.35rem">営業</div>
-      <div class="stat-sub">出荷調整</div>
+    <a href="alerts.php" class="stat-card stat-link <?= $alertCrit ? 'danger' : ($alertN ? 'warn' : 'ok') ?>">
+      <div class="stat-label">アラート</div>
+      <div class="stat-value"><?= $alertN ?></div>
+      <div class="stat-sub"><?= $alertN ? '要確認' : '異常なし' ?></div>
     </a>
     <a href="actual.php" class="stat-card stat-link">
       <div class="stat-label">収量</div>
@@ -113,7 +117,7 @@ $trustCls = [
       <div class="stat-sub">ゴミ込み</div>
     </a>
   </div>
-  <p class="page-sub mb-0">過栽培・昨対・計画の例外は <a href="settings.php">メニュー</a>。収量は下部ナビからも。</p>
+  <p class="page-sub mb-0">需給・過栽培・例外は <a href="settings.php">メニュー</a>。収量は下部ナビからも。</p>
 </div>
 <?php forecast_nav(''); ?>
 </body>

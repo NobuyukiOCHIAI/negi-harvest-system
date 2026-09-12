@@ -20,9 +20,10 @@ require_once __DIR__ . '/lib/nav.php';
   <p class="page-sub mb-3">圃場は「今日 → 栽培」。営業は「予測 → 需給」。収量は下部ナビ「収量」からも1タップ。</p>
 
   <h2 class="section-title"><?= gf_icon('harvest') ?> 経営常時</h2>
-  <p class="page-sub mb-2">実績パフォーマンス（取引先非開示）。ゴミ込みの実力をいつでも。</p>
+  <p class="page-sub mb-2">実績と異常の入口（取引先非開示）。下部ナビ「収量」からも実収穫量へ。</p>
   <div class="list-group quick-links rounded-3 overflow-hidden shadow-sm mb-4">
     <a class="list-group-item list-group-item-action" href="actual.php"><?= gf_icon('harvest', 'ql-ico') ?>実収穫量<?= gf_icon('arrow', 'ql-chevron') ?></a>
+    <a class="list-group-item list-group-item-action" href="alerts.php"><?= gf_icon('alert', 'ql-ico') ?>経営アラート<?= gf_icon('arrow', 'ql-chevron') ?></a>
   </div>
 
   <h2 class="section-title"><?= gf_icon('harvest') ?> 圃場</h2>
