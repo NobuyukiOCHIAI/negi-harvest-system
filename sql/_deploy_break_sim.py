@@ -8,6 +8,7 @@ REMOTE = "/home/love-media/www/greenfarm/forecast"
 FILES = [
     "lib/break_sim.php",
     "capacity.php",
+    "inventory.php",
     "docs/合意仕様.md",
 ]
 

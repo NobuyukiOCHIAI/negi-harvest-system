@@ -276,13 +276,7 @@ $nextShortLabel = $nextShort
     : 'なし';
 $nextShortSurplus = $nextShort !== null ? (float)$nextShort['surplus_kg'] : null;
 
-$sim = plant_schedule_simulate($link, 12);
-$plannedN = (int)$sim['planned_n'];
-
 $trust = trust_outlook_bundle($link, 16);
-$trustSum = $trust['summary'];
-$trustOpen = $trust['summary_open_only'];
-$trustActions = $trust['actions'];
 $trustCumLabels = [];
 $trustCumRot = [];
 $trustCumOpen = [];
@@ -293,14 +287,6 @@ foreach (array_slice($trust['with_rotation'], 0, 14) as $tw) {
 foreach (array_slice($trust['open_only'], 0, 14) as $tw) {
     $trustCumOpen[] = (float)$tw['cum_surplus_kg'];
 }
-$trustStatusClass = [
-    'ok' => 'ok',
-    'watch' => 'warn',
-    'warn' => 'warn',
-    'critical' => 'danger',
-][$trustSum['status']] ?? 'warn';
-$delays = $trust['plant_delays'] ?? [];
-$delayN = count($delays);
 $promiseSum = gf_promise_vs_capacity_summary($link, 8);
 ?>
 <!DOCTYPE html>
@@ -338,32 +324,6 @@ $promiseSum = gf_promise_vs_capacity_summary($link, 8);
   <?php endif; ?>
 
   <?= gf_promise_vs_capacity_card_html($promiseSum, 'capacity.php#sec-outlook') ?>
-
-  <div class="job-card mb-3 py-2" style="border-left:4px solid <?= $trustSum['status'] === 'ok' ? 'var(--gf-green)' : ($trustSum['status'] === 'critical' ? 'var(--gf-red)' : 'var(--gf-amber)') ?>">
-    <div class="job-meta fw-bold"><?= htmlspecialchars($trustSum['status_label'], ENT_QUOTES, 'UTF-8') ?></div>
-    <div class="job-meta">計画どおりなら割れまで <?= (int)$trustSum['runway_weeks'] ?>週 · いまの株のまま <?= (int)$trustOpen['runway_weeks'] ?>週<?php if ($delayN): ?> · 定植遅れ <?= (int)$delayN ?>床<?php endif; ?></div>
-  </div>
-
-  <div class="stat-row">
-    <div class="stat-card <?= $trustStatusClass ?>">
-      <?= gf_icon('alert', 'stat-ico') ?>
-      <div class="stat-label">割れまで</div>
-      <div class="stat-value"><?= (int)$trustSum['runway_weeks'] ?></div>
-      <div class="stat-sub">週（計画実行）</div>
-    </div>
-    <a href="today.php#sec-plant" class="stat-card stat-link <?= $delayN ? 'danger' : 'ok' ?>">
-      <?= gf_icon('plant', 'stat-ico') ?>
-      <div class="stat-label">定植遅れ</div>
-      <div class="stat-value"><?= (int)$delayN ?></div>
-      <div class="stat-sub">計画より遅いベッド</div>
-    </a>
-    <a href="plan.php" class="stat-card stat-link <?= $plannedN ? 'ok' : ($negSurplusN ? 'warn' : '') ?>">
-      <?= gf_icon('plant', 'stat-ico') ?>
-      <div class="stat-label">定植予定</div>
-      <div class="stat-value"><?= $plannedN ?></div>
-      <div class="stat-sub">計画中のベッド数</div>
-    </a>
-  </div>
 
   <?php if ($trustCumLabels): ?>
   <div class="chart-card primary">

@@ -259,9 +259,6 @@ $simModeLabel = $simParam === 'level_weak' ? '平準化（弱）'
 
   <section class="sim-hero" id="sec-break-sim">
     <h2>割れ回避シミュレーション（組み合わせ可）</h2>
-    <p class="page-sub mb-2">
-      現状の定植済ベースに対し、実効収量・出荷スポット・空き定植・前倒し収穫を試し、割れ週を先延ばしできるか見る。DBは書き換えない。
-    </p>
     <form class="sim-form" method="get" action="capacity.php">
       <input type="hidden" name="sim" value="<?= htmlspecialchars($simParam, ENT_QUOTES, 'UTF-8') ?>">
       <div>
@@ -394,37 +391,43 @@ $simModeLabel = $simParam === 'level_weak' ? '平準化（弱）'
     </p>
   </details>
 
-  <div class="chart-card primary" id="sec-outlook">
-    <div class="chart-title">① 週ごとの生産能力（本線＝計画）</div>
-    <p class="page-sub mb-2"><span class="chart-swatch plan"></span>計画 · <span class="chart-swatch planted"></span>定植済 · <span class="chart-swatch gcal"></span>GCAL · 昨対は薄い参考線</p>
-    <div class="chart-wrap tall"><canvas id="capChart"></canvas></div>
-    <p class="page-sub mt-2 mb-0">緑実線=計画能力（収穫後5日で次定植） · 灰破線=いまの畑 · 紫=GCAL。灰が先でゼロに見えるのは定植催促（公式予測ではない）。</p>
-  </div>
-
-  <div class="chart-card primary">
-    <div class="chart-title">② 計画の週次差＋累計（先の余り）</div>
-    <p class="page-sub mb-2"><span class="chart-swatch plan"></span>計画累計 · <span class="chart-swatch sales"></span>定植済累計（営業現実） · 棒=計画−GCAL</p>
-    <div class="chart-wrap tall"><canvas id="surplusChart"></canvas></div>
-    <p class="page-sub mt-2 mb-0">
-      棒=計画−GCAL（③反映）。緑=計画累計。青破線=定植済累計。いま植えても届かない週まで緑と青は一致する。
-    </p>
-  </div>
-
-  <div class="chart-card">
-    <div class="chart-title">③ 先々シミュレーション（<?= htmlspecialchars($simModeLabel, ENT_QUOTES, 'UTF-8') ?>）</div>
-    <p class="page-sub mb-2"><span class="chart-swatch gcal"></span>GCAL · <span class="chart-swatch sales"></span>シミュレーション出荷</p>
-    <div class="d-flex flex-wrap gap-2 mb-2">
-      <a class="btn btn-sm <?= $simParam === 'alert' ? 'btn-primary' : 'btn-outline-secondary' ?>"
-         href="?sim=alert">① 一時を直載せ</a>
-      <a class="btn btn-sm <?= $simParam === 'level_weak' ? 'btn-primary' : 'btn-outline-secondary' ?>"
-         href="?sim=level_weak">② 平準化（弱）</a>
-      <a class="btn btn-sm <?= $simParam === 'level_strong' ? 'btn-primary' : 'btn-outline-secondary' ?>"
-         href="?sim=level_strong">③ 平準化（強）</a>
+  <details class="secondary-block" id="sec-outlook">
+    <summary>本線チャート（週次能力・累計）· 二次</summary>
+    <p class="page-sub mt-2 mb-2">計画能力とGCALの山・累計の余りを見る。打ち手の試行は上部SIM。</p>
+    <div class="chart-card">
+      <div class="chart-title">① 週ごとの生産能力（本線＝計画）</div>
+      <p class="page-sub mb-2"><span class="chart-swatch plan"></span>計画 · <span class="chart-swatch planted"></span>定植済 · <span class="chart-swatch gcal"></span>GCAL · 昨対は薄い参考線</p>
+      <div class="chart-wrap tall"><canvas id="capChart"></canvas></div>
+      <p class="page-sub mt-2 mb-0">緑実線=計画能力（収穫後5日で次定植） · 灰破線=いまの畑 · 紫=GCAL。灰が先でゼロに見えるのは定植催促（公式予測ではない）。</p>
     </div>
-    <div class="chart-wrap tall"><canvas id="simChart"></canvas></div>
-    <p class="page-sub mt-2 mb-0"><?= htmlspecialchars($simNote, ENT_QUOTES, 'UTF-8') ?></p>
-    <p class="page-sub mb-0">営業の読み方: 青＝先方に話してよい出荷ライン。計画の山は定植が回ってからの話。遅れが出たら今日の定植を先に。</p>
-  </div>
+    <div class="chart-card">
+      <div class="chart-title">② 計画の週次差＋累計（先の余り）</div>
+      <p class="page-sub mb-2"><span class="chart-swatch plan"></span>計画累計 · <span class="chart-swatch sales"></span>定植済累計（営業現実） · 棒=計画−GCAL</p>
+      <div class="chart-wrap tall"><canvas id="surplusChart"></canvas></div>
+      <p class="page-sub mt-2 mb-0">
+        棒=計画−GCAL（下の旧出荷SIM反映可）。緑=計画累計。青破線=定植済累計。いま植えても届かない週まで緑と青は一致する。
+      </p>
+    </div>
+  </details>
+
+  <details class="secondary-block">
+    <summary>旧・出荷シナリオSIM（一時直載せ）· 二次・非推奨</summary>
+    <p class="page-sub mt-2 mb-2">上部の割れ回避SIMで足りる。残置は週次表のGCAL差し替え用。</p>
+    <div class="chart-card">
+      <div class="chart-title">③ 先々シミュレーション（<?= htmlspecialchars($simModeLabel, ENT_QUOTES, 'UTF-8') ?>）</div>
+      <p class="page-sub mb-2"><span class="chart-swatch gcal"></span>GCAL · <span class="chart-swatch sales"></span>シミュレーション出荷</p>
+      <div class="d-flex flex-wrap gap-2 mb-2">
+        <a class="btn btn-sm <?= $simParam === 'alert' ? 'btn-primary' : 'btn-outline-secondary' ?>"
+           href="?sim=alert">① 一時を直載せ</a>
+        <a class="btn btn-sm <?= $simParam === 'level_weak' ? 'btn-primary' : 'btn-outline-secondary' ?>"
+           href="?sim=level_weak">② 平準化（弱）</a>
+        <a class="btn btn-sm <?= $simParam === 'level_strong' ? 'btn-primary' : 'btn-outline-secondary' ?>"
+           href="?sim=level_strong">③ 平準化（強）</a>
+      </div>
+      <div class="chart-wrap tall"><canvas id="simChart"></canvas></div>
+      <p class="page-sub mt-2 mb-0"><?= htmlspecialchars($simNote, ENT_QUOTES, 'UTF-8') ?></p>
+    </div>
+  </details>
 
   <details class="secondary-block">
     <summary>季節ベース（取引先共有の目安）· 二次</summary>
@@ -640,6 +643,16 @@ $simModeLabel = $simParam === 'level_weak' ? '平準化（弱）'
       plugins: [G.zeroPlugin],
     });
   }
+
+  document.querySelectorAll('details.secondary-block').forEach((d) => {
+    d.addEventListener('toggle', () => {
+      if (!d.open) return;
+      d.querySelectorAll('canvas').forEach((c) => {
+        const ch = Chart.getChart(c);
+        if (ch) ch.resize();
+      });
+    });
+  });
 })();
 </script>
 </body>
