@@ -29,7 +29,7 @@ if (!$viewOk) {
 <div class="container py-3">
   <div class="alert alert-danger">ビュー未作成です。sql/_apply_harvest_actual_views.py を実行してください。</div>
 </div>
-<?php forecast_nav('settings'); ?>
+<?php forecast_nav('actual'); ?>
 </body></html><?php
     exit;
 }
@@ -441,7 +441,7 @@ $isCalendarYear = ($focusYear === (int)date('Y'));
     </table>
   </div>
 </div>
-<?php forecast_nav('settings'); ?>
+<?php forecast_nav('actual'); ?>
 <script>
 const labels = <?= json_encode($monthLabels, JSON_UNESCAPED_UNICODE) ?>;
 const opt = {
