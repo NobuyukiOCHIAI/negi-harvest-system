@@ -39,7 +39,7 @@ require_once __DIR__ . '/lib/nav.php';
   <p class="page-sub mb-2">在庫の先行きは予測、出荷の調整は需給。下部ナビと同じ画面です。</p>
   <div class="list-group quick-links rounded-3 overflow-hidden shadow-sm mb-4">
     <a class="list-group-item list-group-item-action" href="inventory.php"><?= gf_icon('chart', 'ql-ico') ?>収穫予測<?= gf_icon('arrow', 'ql-chevron') ?></a>
-    <a class="list-group-item list-group-item-action" href="capacity.php"><?= gf_icon('chart', 'ql-ico') ?>需給・営業<?= gf_icon('arrow', 'ql-chevron') ?></a>
+    <a class="list-group-item list-group-item-action" href="capacity.php"><?= gf_icon('chart', 'ql-ico') ?>需給シミュレーション<?= gf_icon('arrow', 'ql-chevron') ?></a>
   </div>
 
   <h2 class="section-title"><?= gf_icon('alert') ?> 品質・振り返り</h2>
