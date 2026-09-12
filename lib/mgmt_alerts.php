@@ -7,6 +7,7 @@ require_once __DIR__ . '/capacity_outlook.php';
 require_once __DIR__ . '/inventory_trust.php';
 require_once __DIR__ . '/supply_ops.php';
 require_once __DIR__ . '/weather_ops.php';
+require_once __DIR__ . '/promise_capacity.php';
 require_once __DIR__ . '/date_display.php';
 
 /**
@@ -35,6 +36,20 @@ function gf_mgmt_alerts_bundle(mysqli $link, ?array $trust = null): array
             'detail' => (string)($fresh['message'] ?? '気温鮮度を確認'),
             'href' => 'weather.php',
             'badge' => isset($fresh['lag_days']) ? ((int)$fresh['lag_days'] . '日遅') : null,
+        ];
+    }
+
+    // 1b) 約束 > 実力
+    $promise = gf_promise_vs_capacity_summary($link, 8);
+    if (($promise['status'] ?? 'ok') !== 'ok') {
+        $items[] = [
+            'id' => 'promise_over_capacity',
+            'category' => 'inventory_break',
+            'severity' => $promise['status'] === 'critical' ? 'critical' : 'warn',
+            'title' => '約束が計画能力を超える週がある',
+            'detail' => (string)$promise['headline'],
+            'href' => 'capacity.php#sec-outlook',
+            'badge' => ((int)$promise['breach_weeks']) . '週',
         ];
     }
 

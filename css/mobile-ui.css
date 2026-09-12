@@ -365,6 +365,67 @@ body {
   max-width: 220px;
   margin: 0 auto;
 }
+.chart-card.primary .chart-title {
+  color: var(--gf-green-dark);
+  font-size: 0.92rem;
+}
+.chart-swatch {
+  display: inline-block;
+  width: 0.7rem;
+  height: 0.18rem;
+  margin: 0 0.2rem 0.12rem 0;
+  vertical-align: middle;
+  border-radius: 1px;
+}
+.chart-swatch.plan { background: #1b7a4a; height: 0.28rem; }
+.chart-swatch.planted { background: #9e9e9e; }
+.chart-swatch.gcal { background: #6a1b9a; }
+.chart-swatch.sales { background: #1565c0; }
+
+/* —— 約束 ≤ 実力 —— */
+.promise-card {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  background: var(--gf-card, #fff);
+  border: 1px solid var(--gf-line);
+  border-left: 4px solid var(--gf-green);
+  border-radius: var(--gf-radius, 12px);
+  padding: 0.75rem 0.9rem;
+  margin-bottom: 0.85rem;
+  box-shadow: var(--gf-shadow);
+}
+.promise-card:active { background: var(--gf-green-soft); }
+.promise-kicker {
+  font-size: 0.72rem;
+  font-weight: 800;
+  color: var(--gf-muted);
+  letter-spacing: 0.02em;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.25rem;
+}
+.promise-badge {
+  font-size: 0.65rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  background: var(--gf-bg, #f4f6f5);
+}
+.promise-card.status-ok .promise-badge { background: #e8f5e9; color: #2e7d32; }
+.promise-card.status-warn .promise-badge { background: #fff8e1; color: #ef6c00; }
+.promise-card.status-critical .promise-badge { background: #ffebee; color: #c62828; }
+.promise-headline {
+  font-weight: 800;
+  font-size: 0.95rem;
+  line-height: 1.35;
+}
+.promise-detail {
+  margin-top: 0.3rem;
+  font-size: 0.78rem;
+  color: var(--gf-muted);
+  line-height: 1.35;
+}
 
 /* —— Tables (mobile scroll + sticky first col) —— */
 .table-responsive {

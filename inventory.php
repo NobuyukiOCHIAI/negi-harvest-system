@@ -16,6 +16,7 @@ require_once __DIR__ . '/lib/plant_schedule.php';
 require_once __DIR__ . '/lib/inventory_trust.php';
 require_once __DIR__ . '/lib/supply_ops.php';
 require_once __DIR__ . '/lib/weather_ops.php';
+require_once __DIR__ . '/lib/promise_capacity.php';
 
 /** 週カード／表のベッド明細（栽培中=未完了。予定残=有効予測−既収穫。有効予測=⑤postproc優先） */
 function inv_cycle_list_html(array $details): string
@@ -300,6 +301,7 @@ $trustStatusClass = [
 ][$trustSum['status']] ?? 'warn';
 $delays = $trust['plant_delays'] ?? [];
 $delayN = count($delays);
+$promiseSum = gf_promise_vs_capacity_summary($link, 8);
 ?>
 <!DOCTYPE html>
 <html lang="ja">
@@ -309,8 +311,9 @@ $delayN = count($delays);
   <meta name="theme-color" content="#1b7a4a">
   <title>収穫予測</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link rel="stylesheet" href="css/mobile-ui.css?v=20260815a">
+  <link rel="stylesheet" href="css/mobile-ui.css?v=20260912c">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="js/gf-chart-theme.js?v=20260912c"></script>
 </head>
 <body>
 <div class="container py-3">
@@ -333,6 +336,8 @@ $delayN = count($delays);
       <?php if (!empty($sync['synced_at'])): ?> · <?= htmlspecialchars($sync['synced_at'], ENT_QUOTES, 'UTF-8') ?><?php endif; ?>
     </p>
   <?php endif; ?>
+
+  <?= gf_promise_vs_capacity_card_html($promiseSum, 'capacity.php#sec-outlook') ?>
 
   <div class="job-card mb-3 py-2" style="border-left:4px solid <?= $trustSum['status'] === 'ok' ? 'var(--gf-green)' : ($trustSum['status'] === 'critical' ? 'var(--gf-red)' : 'var(--gf-amber)') ?>">
     <div class="job-meta fw-bold"><?= htmlspecialchars($trustSum['status_label'], ENT_QUOTES, 'UTF-8') ?></div>
@@ -361,20 +366,21 @@ $delayN = count($delays);
   </div>
 
   <?php if ($trustCumLabels): ?>
-  <div class="chart-card">
+  <div class="chart-card primary">
     <div class="chart-title">累計在庫の先行き（本線）</div>
+    <p class="page-sub mb-2"><span class="chart-swatch plan"></span>計画どおり · <span class="chart-swatch planted"></span>いまの畑のまま</p>
     <div class="chart-wrap tall"><canvas id="trustCumChart"></canvas></div>
-    <p class="page-sub mt-2 mb-0">この画面の主チャート。緑=計画どおりに定植した場合 · 灰=いまの畑のまま（植えないと先でゼロに見える＝定植催促。公式予測ではない）。</p>
+    <p class="page-sub mt-2 mb-0">この画面の主チャート。緑=計画どおりに定植した場合 · 灰破線=いまの畑のまま（植えないと先でゼロに見える＝定植催促。公式予測ではない）。</p>
   </div>
   <?php endif; ?>
 
   <?php if ($chartLabels): ?>
   <div class="chart-card">
     <div class="chart-title">直近週 · 定植済予測 / 残出荷 / 累計余剰</div>
+    <p class="page-sub mb-2">二次。いま畑に植わっている分。能力・拡大案は <a href="capacity.php">需給</a>。</p>
     <div class="chart-wrap tall">
       <canvas id="invChart"></canvas>
     </div>
-    <p class="page-sub mt-2 mb-0">いま畑に植わっている分。当週のプラスは先の出荷の持ち越し。能力・拡大案は <a href="capacity.php">需給</a>。</p>
   </div>
   <?php endif; ?>
 
@@ -480,22 +486,24 @@ $delayN = count($delays);
 <script>
 (() => {
   const el = document.getElementById('trustCumChart');
-  if (!el || !window.Chart) return;
+  if (!el || !window.Chart || !window.GF_CHART) return;
+  const G = window.GF_CHART;
   new Chart(el, {
     type: 'line',
     data: {
       labels: <?= json_encode($trustCumLabels, JSON_UNESCAPED_UNICODE) ?>,
       datasets: [
-        { label: '累計在庫（計画どおり定植）', data: <?= json_encode($trustCumRot) ?>, borderColor: '#1b7a4a', tension: 0.25, fill: false },
-        { label: '累計在庫（いまの畑のまま）', data: <?= json_encode($trustCumOpen) ?>, borderColor: '#9e9e9e', borderDash: [5,4], tension: 0.25, fill: false }
-      ]
+        G.dsPlan('累計在庫（計画どおり定植）', <?= json_encode($trustCumRot) ?>, { fill: true }),
+        G.dsPlanted('累計在庫（いまの畑のまま）', <?= json_encode($trustCumOpen) ?>),
+      ],
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } } },
-      scales: { y: { ticks: { callback: v => v + 'kg' } } }
-    }
+      plugins: { legend: G.legend },
+      scales: { y: G.yKg(false) },
+    },
+    plugins: [G.zeroPlugin],
   });
 })();
 </script>
@@ -503,39 +511,54 @@ $delayN = count($delays);
 <?php if ($chartLabels): ?>
 <script>
 (() => {
+  if (!window.Chart || !window.GF_CHART) return;
+  const G = window.GF_CHART;
   const currentIdx = <?= $chartCurrentIdx === null ? 'null' : (int)$chartCurrentIdx ?>;
-  const pointRadius = <?= json_encode(array_map(static fn($i) => $i === $chartCurrentIdx ? 6 : 2, array_keys($chartLabels))) ?>;
-  const pointBorder = <?= json_encode(array_map(static fn($i) => $i === $chartCurrentIdx ? '#1b7a4a' : undefined, array_keys($chartLabels))) ?>;
+  const pointRadius = <?= json_encode(array_map(static fn($i) => $i === $chartCurrentIdx ? 5 : 0, array_keys($chartLabels))) ?>;
   new Chart(document.getElementById('invChart'), {
     type: 'line',
     data: {
       labels: <?= json_encode($chartLabels, JSON_UNESCAPED_UNICODE) ?>,
       datasets: [
-        { label: '定植済予測', data: <?= json_encode($chartFc) ?>, borderColor: '#1b7a4a', backgroundColor: 'rgba(27,122,74,0.15)', fill: true, tension: 0.25, pointRadius, pointHoverRadius: 7 },
-        { label: '残出荷', data: <?= json_encode($chartShip) ?>, borderColor: '#c47a00', backgroundColor: 'rgba(196,122,0,0.12)', fill: true, tension: 0.25, pointRadius: 2 },
-        { label: '余剰', data: <?= json_encode($chartSurplus) ?>, borderColor: '#2c5aa0', borderDash: [4,3], tension: 0.25, pointRadius: 2 }
-      ]
+        G.dsPlan('定植済予測', <?= json_encode($chartFc) ?>, {
+          fill: true,
+          borderWidth: 2.5,
+          pointRadius,
+          pointHoverRadius: 6,
+        }),
+        G.dsGcal('残出荷', <?= json_encode($chartShip) ?>, {
+          borderColor: '#c47a00',
+          borderDash: [],
+          borderWidth: 2,
+          backgroundColor: 'rgba(196,122,0,0.10)',
+          fill: true,
+        }),
+        G.dsSales('余剰', <?= json_encode($chartSurplus) ?>, {
+          borderDash: [4, 3],
+          borderWidth: 1.5,
+          pointRadius: 0,
+        }),
+      ],
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      plugins: {
-        legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 11 } } },
-        annotation: undefined
-      },
+      plugins: { legend: G.legend },
       scales: {
-        y: { ticks: { font: { size: 10 } } },
+        y: G.yKg(false),
         x: {
           ticks: {
             font: (ctx) => ({
               size: 10,
-              weight: currentIdx !== null && ctx.index === currentIdx ? 'bold' : 'normal'
+              weight: currentIdx !== null && ctx.index === currentIdx ? 'bold' : 'normal',
             }),
-            color: (ctx) => (currentIdx !== null && ctx.index === currentIdx ? '#1b7a4a' : undefined)
-          }
-        }
-      }
-    }
+            color: (ctx) =>
+              currentIdx !== null && ctx.index === currentIdx ? G.C.plan : undefined,
+          },
+        },
+      },
+    },
+    plugins: [G.zeroPlugin],
   });
 })();
 </script>

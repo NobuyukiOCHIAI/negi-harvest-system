@@ -5,11 +5,13 @@
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/nav.php';
 require_once __DIR__ . '/lib/mgmt_alerts.php';
+require_once __DIR__ . '/lib/promise_capacity.php';
 
 $bundle = gf_mgmt_alerts_bundle($link);
 $items = $bundle['items'];
 $counts = $bundle['counts'];
 $total = (int)$counts['total'];
+$promiseSum = gf_promise_vs_capacity_summary($link, 8);
 
 $catLabel = [
     'weather' => '気温',
@@ -31,7 +33,7 @@ $sevClass = [
   <meta name="theme-color" content="#1b7a4a">
   <title>経営アラート</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link rel="stylesheet" href="css/mobile-ui.css?v=20260912b">
+  <link rel="stylesheet" href="css/mobile-ui.css?v=20260912c">
   <style>
     .alert-card {
       display: block;
@@ -86,6 +88,8 @@ $sevClass = [
       <p class="page-sub">異常・要注意にすぐ気づく · 社内用（取引先非開示） · 実績は <a href="actual.php">収量</a></p>
     </div>
   </div>
+
+  <?= gf_promise_vs_capacity_card_html($promiseSum, 'capacity.php#sec-outlook') ?>
 
   <div class="stat-row mb-3">
     <div class="stat-card <?= $counts['critical'] ? 'danger' : '' ?>">

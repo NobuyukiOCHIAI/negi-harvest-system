@@ -11,6 +11,7 @@ require_once __DIR__ . '/lib/gcal_shipments.php';
 require_once __DIR__ . '/lib/date_display.php';
 require_once __DIR__ . '/lib/nav.php';
 require_once __DIR__ . '/lib/cycle_photos.php';
+require_once __DIR__ . '/lib/promise_capacity.php';
 
 $flash = '';
 $err = '';
@@ -89,6 +90,7 @@ $simNote = $simMode === 'level'
 
 $delays = $trust['plant_delays'] ?? [];
 $delayN = count($delays);
+$promiseSum = gf_promise_vs_capacity_summary($link, 8);
 $plantExecLate = $delayN;
 $nearCutoff = supply_near_week_cutoff();
 $expandShown = 0;
@@ -148,8 +150,9 @@ $simModeLabel = $simParam === 'level_weak' ? '平準化（弱）'
   <meta name="theme-color" content="#1b7a4a">
   <title>需給・営業</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link rel="stylesheet" href="css/mobile-ui.css?v=20260815d">
+  <link rel="stylesheet" href="css/mobile-ui.css?v=20260912c">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="js/gf-chart-theme.js?v=20260912c"></script>
 </head>
 <body>
 <div class="container py-3">
@@ -166,6 +169,8 @@ $simModeLabel = $simParam === 'level_weak' ? '平準化（弱）'
   <?php if ($err): ?>
     <div class="alert alert-danger py-2"><?= htmlspecialchars($err, ENT_QUOTES, 'UTF-8') ?></div>
   <?php endif; ?>
+
+  <?= gf_promise_vs_capacity_card_html($promiseSum, 'capacity.php#sec-outlook') ?>
 
   <div class="job-card mb-3" style="border-left:4px solid var(--gf-green)">
     <div class="job-meta">
@@ -264,22 +269,25 @@ $simModeLabel = $simParam === 'level_weak' ? '平準化（弱）'
     · 想定 <?= (int)$sum['defaults']['days'] ?>日 / <?= (int)$sum['defaults']['yield'] ?>kg
   </p>
 
-  <div class="chart-card">
+  <div class="chart-card primary" id="sec-outlook">
     <div class="chart-title">① 週ごとの生産能力（本線＝計画）</div>
+    <p class="page-sub mb-2"><span class="chart-swatch plan"></span>計画 · <span class="chart-swatch planted"></span>定植済 · <span class="chart-swatch gcal"></span>GCAL · 昨対は薄い参考線</p>
     <div class="chart-wrap tall"><canvas id="capChart"></canvas></div>
-    <p class="page-sub mt-2 mb-0">緑実線=計画能力（収穫後5日で次定植した場合） · 灰点線=いま畑に植わっている分 · 紫=GCAL · 灰実線=昨対。灰が先でゼロに見えるのは定植催促であり、公式予測ではない。</p>
+    <p class="page-sub mt-2 mb-0">緑実線=計画能力（収穫後5日で次定植） · 灰破線=いまの畑 · 紫=GCAL。灰が先でゼロに見えるのは定植催促（公式予測ではない）。</p>
   </div>
 
-  <div class="chart-card">
+  <div class="chart-card primary">
     <div class="chart-title">② 計画の週次差＋累計（先の余り）</div>
+    <p class="page-sub mb-2"><span class="chart-swatch plan"></span>計画累計 · <span class="chart-swatch sales"></span>定植済累計（営業現実） · 棒=計画−GCAL</p>
     <div class="chart-wrap tall"><canvas id="surplusChart"></canvas></div>
     <p class="page-sub mt-2 mb-0">
-      棒=計画−GCAL（③反映）。緑=計画累計。青破線=定植済累計。どちらも予測の累計余剰が土台。いま植えても届かない週まで緑と青は一致する。
+      棒=計画−GCAL（③反映）。緑=計画累計。青破線=定植済累計。いま植えても届かない週まで緑と青は一致する。
     </p>
   </div>
 
   <div class="chart-card">
     <div class="chart-title">③ 先々シミュレーション（<?= htmlspecialchars($simModeLabel, ENT_QUOTES, 'UTF-8') ?>）</div>
+    <p class="page-sub mb-2"><span class="chart-swatch gcal"></span>GCAL · <span class="chart-swatch sales"></span>シミュレーション出荷</p>
     <div class="d-flex flex-wrap gap-2 mb-2">
       <a class="btn btn-sm <?= $simParam === 'alert' ? 'btn-primary' : 'btn-outline-secondary' ?>"
          href="?sim=alert">① 一時を直載せ</a>
@@ -399,9 +407,13 @@ $simModeLabel = $simParam === 'level_weak' ? '平準化（弱）'
 <script>
 (() => {
   const labels = <?= json_encode($chartLabels, JSON_UNESCAPED_UNICODE) ?>;
-  if (!window.Chart) return;
-  const yKg = { beginAtZero: true, ticks: { callback: v => v + 'kg' } };
-  const legend = { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } };
+  if (!window.Chart || !window.GF_CHART) return;
+  const G = window.GF_CHART;
+  const baseOpt = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: G.legend },
+  };
 
   const capEl = document.getElementById('capChart');
   if (capEl) {
@@ -410,21 +422,20 @@ $simModeLabel = $simParam === 'level_weak' ? '平準化（弱）'
       data: {
         labels,
         datasets: [
-          { label: '計画能力', data: <?= json_encode($chartCap) ?>, borderColor: '#1b7a4a', borderWidth: 2.5, tension: 0.25, fill: false },
-          { label: '定植済（いまの畑）', data: <?= json_encode($chartOpen) ?>, borderColor: '#9e9e9e', borderDash: [5,3], tension: 0.25, fill: false },
-          { label: 'GCAL確定', data: <?= json_encode($chartGcal) ?>, borderColor: '#7b1fa2', borderDash: [4,3], tension: 0.25, fill: false },
-          { label: '昨対実績', data: <?= json_encode($chartYoy) ?>, borderColor: '#9e9e9e', tension: 0.25, fill: false, pointRadius: 0 }
-        ]
+          G.dsPlan('計画能力', <?= json_encode($chartCap) ?>),
+          G.dsPlanted('定植済（いまの畑）', <?= json_encode($chartOpen) ?>),
+          G.dsGcal('GCAL確定', <?= json_encode($chartGcal) ?>),
+          G.dsYoy('昨対実績', <?= json_encode($chartYoy) ?>),
+        ],
       },
-      options: { responsive: true, maintainAspectRatio: false, plugins: { legend }, scales: { y: yKg } }
+      options: { ...baseOpt, scales: { y: G.yKg(true) } },
+      plugins: [G.zeroPlugin],
     });
   }
 
   const surEl = document.getElementById('surplusChart');
   if (surEl) {
     const surplus = <?= json_encode($chartPlanSurplusSim) ?>;
-    const openCum = <?= json_encode($chartOpenCum) ?>;
-    const cumTarget = <?= json_encode($chartCumSurplus) ?>;
     new Chart(surEl, {
       data: {
         labels,
@@ -433,47 +444,34 @@ $simModeLabel = $simParam === 'level_weak' ? '平準化（弱）'
             type: 'bar',
             label: '計画−GCAL',
             data: surplus,
-            backgroundColor: surplus.map(v => v >= 0 ? 'rgba(27,122,74,0.55)' : 'rgba(196,70,40,0.55)'),
+            backgroundColor: surplus.map((v) => (v >= 0 ? G.C.pos : G.C.neg)),
             borderWidth: 0,
-            yAxisID: 'y'
+            yAxisID: 'y',
           },
-          {
+          G.dsPlan('計画累計', <?= json_encode($chartCumSurplus) ?>, {
             type: 'line',
-            label: '計画累計',
-            data: cumTarget,
-            borderColor: '#1b7a4a',
-            borderWidth: 2.5,
-            tension: 0.25,
-            fill: false,
-            pointRadius: 2,
-            yAxisID: 'y'
-          },
-          {
+            pointRadius: 0,
+            yAxisID: 'y',
+          }),
+          G.dsSales('定植済累計', <?= json_encode($chartOpenCum) ?>, {
             type: 'line',
-            label: '定植済累計',
-            data: openCum,
-            borderColor: '#1565c0',
             borderDash: [5, 3],
-            tension: 0.25,
-            fill: false,
-            pointRadius: 2,
-            yAxisID: 'y'
-          }
-        ]
+            borderWidth: 2,
+            pointRadius: 0,
+            yAxisID: 'y',
+          }),
+        ],
       },
       options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: { legend },
+        ...baseOpt,
         scales: {
-          y: {
+          y: Object.assign(G.yKg(true), {
             position: 'left',
-            beginAtZero: true,
             title: { display: true, text: 'kg', font: { size: 10 } },
-            ticks: { callback: v => v + 'kg' }
-          }
-        }
-      }
+          }),
+        },
+      },
+      plugins: [G.zeroPlugin],
     });
   }
 
@@ -484,11 +482,15 @@ $simModeLabel = $simParam === 'level_weak' ? '平準化（弱）'
       data: {
         labels,
         datasets: [
-          { label: 'GCAL確定', data: <?= json_encode($chartGcal) ?>, borderColor: '#7b1fa2', borderDash: [4,3], tension: 0.25, fill: false },
-          { label: <?= json_encode($simMode === 'level' ? '平準化シミュレーション' : 'アラート直載せ', JSON_UNESCAPED_UNICODE) ?>, data: <?= json_encode($chartSim) ?>, borderColor: '#1976d2', tension: 0.25, fill: false }
-        ]
+          G.dsGcal('GCAL確定', <?= json_encode($chartGcal) ?>),
+          G.dsSales(
+            <?= json_encode($simMode === 'level' ? '平準化シミュレーション' : 'アラート直載せ', JSON_UNESCAPED_UNICODE) ?>,
+            <?= json_encode($chartSim) ?>
+          ),
+        ],
       },
-      options: { responsive: true, maintainAspectRatio: false, plugins: { legend }, scales: { y: yKg } }
+      options: { ...baseOpt, scales: { y: G.yKg(true) } },
+      plugins: [G.zeroPlugin],
     });
   }
 })();
