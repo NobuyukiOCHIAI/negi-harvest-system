@@ -97,13 +97,13 @@ if ($effParam !== null && $effParam <= 0) {
     $effParam = null;
 }
 $shipDelta = isset($_GET['ship_delta']) ? (float)$_GET['ship_delta'] : 0.0;
-$shipWeeks = isset($_GET['ship_weeks']) ? (int)$_GET['ship_weeks'] : 4;
 $plantN = isset($_GET['plant_n']) ? (int)$_GET['plant_n'] : 0;
+$earlyDays = isset($_GET['early_days']) ? (int)$_GET['early_days'] : 0;
 $breakSim = gf_break_sim_combo($link, [
     'eff' => $effParam,
     'ship_delta' => $shipDelta,
-    'ship_weeks' => $shipWeeks,
     'plant_n' => $plantN,
+    'early_days' => $earlyDays,
 ], 16);
 $plantExecLate = $delayN;
 $nearCutoff = supply_near_week_cutoff();
@@ -248,10 +248,11 @@ $simModeLabel = $simParam === 'level_weak' ? '平準化（弱）'
     $baseBreak = $bs['baseline']['first_break_week'] ?? null;
     $scBreak = $bs['scenario']['first_break_week'] ?? null;
     $shipDeltaV = (float)$bs['ship_delta'];
-    $shipWeeksV = (int)$bs['ship_weeks'];
     $plantNV = (int)$bs['plant_n'];
+    $earlyDaysV = (int)($bs['early_days'] ?? 0);
     $emptyN = (int)$bs['empty_beds'];
     $plantedN = (int)($bs['plant_extra']['planted'] ?? 0);
+    $shiftedBeds = (int)($bs['early_extra']['shifted_beds'] ?? 0);
     $useEff = !empty($bs['use_eff']);
     $qBase = 'sim=' . rawurlencode($simParam);
   ?>
@@ -259,7 +260,7 @@ $simModeLabel = $simParam === 'level_weak' ? '平準化（弱）'
   <section class="sim-hero" id="sec-break-sim">
     <h2>割れ回避シミュレーション（組み合わせ可）</h2>
     <p class="page-sub mb-2">
-      現状の定植済ベースに対し、実効収量・出荷加減・空き定植を試し、割れ週を先延ばしできるか見る。DBは書き換えない。
+      現状の定植済ベースに対し、実効収量・出荷スポット・空き定植・前倒し収穫を試し、割れ週を先延ばしできるか見る。DBは書き換えない。
     </p>
     <form class="sim-form" method="get" action="capacity.php">
       <input type="hidden" name="sim" value="<?= htmlspecialchars($simParam, ENT_QUOTES, 'UTF-8') ?>">
@@ -269,25 +270,27 @@ $simModeLabel = $simParam === 'level_weak' ? '平準化（弱）'
                value="<?= $useEff ? $effNow : $sug ?>" placeholder="<?= $sug ?>">
       </div>
       <div>
-        <label for="ship_delta">② 出荷加減 kg/週</label>
+        <label for="ship_delta">② 出荷加減 kg</label>
         <input id="ship_delta" type="number" name="ship_delta" min="-500" max="500" step="10" value="<?= (int)$shipDeltaV ?>">
-      </div>
-      <div>
-        <label for="ship_weeks">② 対象週数</label>
-        <input id="ship_weeks" type="number" name="ship_weeks" min="1" max="12" step="1" value="<?= max(1, $shipWeeksV) ?>">
       </div>
       <div>
         <label for="plant_n">③ 明日定植する空き床</label>
         <input id="plant_n" type="number" name="plant_n" min="0" max="999" step="1" value="<?= $plantNV >= 999 ? $emptyN : max(0, $plantNV) ?>">
+      </div>
+      <div>
+        <label for="early_days">④ 前倒し収穫 日</label>
+        <input id="early_days" type="number" name="early_days" min="0" max="60" step="1" value="<?= max(0, $earlyDaysV) ?>">
       </div>
       <button type="submit" class="btn btn-success btn-sm">試す</button>
     </form>
     <div class="d-flex flex-wrap gap-2 mt-2 mb-2">
       <a class="btn btn-outline-secondary btn-sm" href="?<?= $qBase ?>&eff=<?= $sug ?>">①平均<?= $sug ?>kg</a>
       <a class="btn btn-outline-secondary btn-sm" href="?<?= $qBase ?>&eff=160">①160kg</a>
-      <a class="btn btn-outline-secondary btn-sm" href="?<?= $qBase ?><?= $useEff ? '&eff=' . $effNow : '' ?>&ship_delta=-50&ship_weeks=4">②出荷−50×4週</a>
+      <a class="btn btn-outline-secondary btn-sm" href="?<?= $qBase ?><?= $useEff ? '&eff=' . $effNow : '' ?>&ship_delta=-50">②出荷−50</a>
       <a class="btn btn-outline-secondary btn-sm" href="?<?= $qBase ?><?= $useEff ? '&eff=' . $effNow : '' ?>&plant_n=999">③空き全床を明日定植(<?= $emptyN ?>)</a>
-      <a class="btn btn-outline-secondary btn-sm" href="?<?= $qBase ?>&eff=<?= $sug ?>&ship_delta=-50&ship_weeks=4&plant_n=999">①②③まとめて</a>
+      <a class="btn btn-outline-secondary btn-sm" href="?<?= $qBase ?><?= $useEff ? '&eff=' . $effNow : '' ?>&early_days=7">④前倒し7日</a>
+      <a class="btn btn-outline-secondary btn-sm" href="?<?= $qBase ?><?= $useEff ? '&eff=' . $effNow : '' ?>&early_days=14">④前倒し14日</a>
+      <a class="btn btn-outline-secondary btn-sm" href="?<?= $qBase ?>&eff=<?= $sug ?>&ship_delta=-50&plant_n=999&early_days=7">①〜④まとめて</a>
     </div>
     <p class="page-sub mb-2">
       直近平均≈<?= $sug ?>kg<?= $recentN ? "（n={$recentN}）" : '' ?> · 空き床 <?= $emptyN ?> ·
@@ -295,6 +298,9 @@ $simModeLabel = $simParam === 'level_weak' ? '平準化（弱）'
       <?php if ($plantedN > 0): ?>
         · 明日定植<?= $plantedN ?>床→収穫週 <?= h_sunday_week($bs['plant_extra']['harvest_week'] ?? null) ?>
         （約<?= (int)$bs['plant_extra']['days'] ?>日・<?= (int)$bs['plant_extra']['yield_kg'] ?>kg/床）
+      <?php endif; ?>
+      <?php if ($earlyDaysV > 0): ?>
+        · 収穫予定を<?= $earlyDaysV ?>日前倒し<?= $shiftedBeds ? "（{$shiftedBeds}床）" : '' ?>
       <?php endif; ?>
     </p>
 
@@ -314,7 +320,7 @@ $simModeLabel = $simParam === 'level_weak' ? '平準化（弱）'
       </div>
     </div>
     <p class="page-sub mb-0">
-      出荷減は営業依頼の試算。定植は現場の <a href="today.php#sec-plant">今日</a> で実行。異常は <a href="alerts.php">経営アラート</a>。
+      出荷減は営業依頼の試算。前倒し収穫・定植は現場の <a href="today.php">今日</a> で実行。異常は <a href="alerts.php">経営アラート</a>。
     </p>
   </section>
 

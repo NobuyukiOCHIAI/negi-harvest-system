@@ -1,6 +1,6 @@
 <?php
 /**
- * 在庫割れ回避シミュレーション — 実効収量・出荷加減・定植前倒し（DB非破壊）
+ * 在庫割れ回避シミュレーション — 実効収量・出荷スポット・定植前倒し・前倒し収穫（DB非破壊）
  * 正本 §0.10
  */
 require_once __DIR__ . '/rotation_capacity.php';
@@ -46,24 +46,53 @@ FROM (
     ];
 }
 
-/** @return array{open_by_week:array<string,float>,beds:int,remain_total:float} */
-function gf_model_open_by_week(mysqli $link): array
+/**
+ * 栽培中残を週次に載せる（実効収量・前倒し収穫日を任意適用）
+ *
+ * @return array{
+ *   open_by_week:array<string,float>,
+ *   beds:int,
+ *   remain_total:float,
+ *   early_days:int,
+ *   shifted_beds:int
+ * }
+ */
+function gf_open_by_week_scenario(mysqli $link, ?float $effYieldKg = null, int $earlyDays = 0): array
 {
+    $today = date('Y-m-d');
+    $earlyDays = max(0, min(60, $earlyDays));
     $openByWeek = [];
     $beds = 0;
     $remainTotal = 0.0;
+    $shiftedBeds = 0;
+
     foreach (rotation_open_cycles($link) as $oc) {
         $beds++;
-        $r = (float)$oc['remain_kg'];
-        $remainTotal += $r;
-        if ($r <= 0.001) {
+        $harvested = (float)$oc['harvested_kg'];
+        $remain = $effYieldKg !== null && $effYieldKg > 0
+            ? max(0.0, $effYieldKg - $harvested)
+            : (float)$oc['remain_kg'];
+        $remainTotal += $remain;
+        if ($remain <= 0.001) {
             continue;
         }
-        $w = (string)$oc['harvest_week'];
-        if (!isset($openByWeek[$w])) {
-            $openByWeek[$w] = 0.0;
+
+        $expected = (string)$oc['expected_harvest'];
+        if ($earlyDays > 0) {
+            $shifted = date('Y-m-d', strtotime($expected . ' -' . $earlyDays . ' days'));
+            if ($shifted < $today) {
+                $shifted = $today;
+            }
+            if ($shifted !== $expected) {
+                $shiftedBeds++;
+            }
+            $expected = $shifted;
         }
-        $openByWeek[$w] += $r;
+        $week = gcal_week_start_sunday($expected);
+        if (!isset($openByWeek[$week])) {
+            $openByWeek[$week] = 0.0;
+        }
+        $openByWeek[$week] += $remain;
     }
     foreach ($openByWeek as $w => $kg) {
         $openByWeek[$w] = round($kg, 1);
@@ -72,37 +101,30 @@ function gf_model_open_by_week(mysqli $link): array
         'open_by_week' => $openByWeek,
         'beds' => $beds,
         'remain_total' => round($remainTotal, 1),
+        'early_days' => $earlyDays,
+        'shifted_beds' => $shiftedBeds,
+    ];
+}
+
+/** @return array{open_by_week:array<string,float>,beds:int,remain_total:float} */
+function gf_model_open_by_week(mysqli $link): array
+{
+    $o = gf_open_by_week_scenario($link, null, 0);
+    return [
+        'open_by_week' => $o['open_by_week'],
+        'beds' => $o['beds'],
+        'remain_total' => $o['remain_total'],
     ];
 }
 
 /** remain = max(0, eff_yield - harvested) */
 function gf_eff_yield_open_by_week(mysqli $link, float $effYieldKg): array
 {
-    $effYieldKg = max(0.0, $effYieldKg);
-    $openByWeek = [];
-    $beds = 0;
-    $remainTotal = 0.0;
-    foreach (rotation_open_cycles($link) as $oc) {
-        $beds++;
-        $harvested = (float)$oc['harvested_kg'];
-        $remain = max(0.0, $effYieldKg - $harvested);
-        if ($remain <= 0.001) {
-            continue;
-        }
-        $week = (string)$oc['harvest_week'];
-        if (!isset($openByWeek[$week])) {
-            $openByWeek[$week] = 0.0;
-        }
-        $openByWeek[$week] += $remain;
-        $remainTotal += $remain;
-    }
-    foreach ($openByWeek as $w => $kg) {
-        $openByWeek[$w] = round($kg, 1);
-    }
+    $o = gf_open_by_week_scenario($link, $effYieldKg, 0);
     return [
-        'open_by_week' => $openByWeek,
-        'beds' => $beds,
-        'remain_total' => round($remainTotal, 1),
+        'open_by_week' => $o['open_by_week'],
+        'beds' => $o['beds'],
+        'remain_total' => $o['remain_total'],
     ];
 }
 
@@ -143,24 +165,23 @@ function gf_plant_tomorrow_extra(mysqli $link, int $plantN, ?float $yieldKg = nu
 
 /**
  * @param array<string,float> $openByWeek
- * @param array{ship_delta:float,ship_weeks:int}|null $shipAdj
+ * @param float|null $shipSpotKg 当週出荷へのスポット加減（1回のみ）
  * @return list<array>
  */
 function gf_break_sim_cum_from_open(
     mysqli $link,
     array $openByWeek,
     int $weeksAhead = 16,
-    ?array $shipAdj = null
+    ?float $shipSpotKg = null
 ): array {
     $outlook = rotation_capacity_outlook($link, $weeksAhead);
-    $shipDelta = (float)($shipAdj['ship_delta'] ?? 0);
-    $shipWeeks = max(0, (int)($shipAdj['ship_weeks'] ?? 0));
+    $spot = $shipSpotKg ?? 0.0;
     $base = [];
     foreach ($outlook['weeks'] as $i => $w) {
         $week = (string)$w['week'];
         $ship = (float)($w['ship_kg'] ?? $w['gcal_kg'] ?? 0);
-        if ($shipDelta !== 0.0 && $i < $shipWeeks) {
-            $ship = max(0.0, $ship + $shipDelta);
+        if ($i === 0 && $spot !== 0.0) {
+            $ship = max(0.0, $ship + $spot);
         }
         $base[] = [
             'week' => $week,
@@ -191,8 +212,8 @@ function gf_merge_week_kg(array $a, array $b): array
  * @param array{
  *   eff?:?float,
  *   ship_delta?:float,
- *   ship_weeks?:int,
- *   plant_n?:int
+ *   plant_n?:int,
+ *   early_days?:int
  * } $opts
  */
 function gf_break_sim_combo(mysqli $link, array $opts = [], int $weeksAhead = 16): array
@@ -205,16 +226,18 @@ function gf_break_sim_combo(mysqli $link, array $opts = [], int $weeksAhead = 16
     $effKg = $useEff ? (float)$eff : $suggested;
 
     $shipDelta = (float)($opts['ship_delta'] ?? 0);
-    $shipWeeks = max(0, min(16, (int)($opts['ship_weeks'] ?? 4)));
     $plantN = (int)($opts['plant_n'] ?? 0);
+    $earlyDays = max(0, min(60, (int)($opts['early_days'] ?? 0)));
 
-    $baseOpen = gf_model_open_by_week($link);
+    $baseOpen = gf_open_by_week_scenario($link, null, 0);
     $baseCum = gf_break_sim_cum_from_open($link, $baseOpen['open_by_week'], $weeksAhead, null);
     $baseSum = trust_break_summary($baseCum);
 
-    $scOpen = $useEff
-        ? gf_eff_yield_open_by_week($link, $effKg)
-        : $baseOpen;
+    $scOpen = gf_open_by_week_scenario(
+        $link,
+        $useEff ? $effKg : null,
+        $earlyDays
+    );
 
     $plantExtra = gf_plant_tomorrow_extra(
         $link,
@@ -227,11 +250,8 @@ function gf_break_sim_combo(mysqli $link, array $opts = [], int $weeksAhead = 16
         1
     );
 
-    $shipAdj = ($shipDelta !== 0.0 && $shipWeeks > 0)
-        ? ['ship_delta' => $shipDelta, 'ship_weeks' => $shipWeeks]
-        : null;
-
-    $scCum = gf_break_sim_cum_from_open($link, $scWeeks, $weeksAhead, $shipAdj);
+    $shipSpot = $shipDelta !== 0.0 ? $shipDelta : null;
+    $scCum = gf_break_sim_cum_from_open($link, $scWeeks, $weeksAhead, $shipSpot);
     $scSum = trust_break_summary($scCum);
 
     $labels = [];
@@ -247,12 +267,16 @@ function gf_break_sim_combo(mysqli $link, array $opts = [], int $weeksAhead = 16
     if ($useEff) {
         $levers[] = '実効' . (int)$effKg . 'kg/床';
     }
-    if ($shipAdj) {
+    if ($shipSpot !== null) {
         $sign = $shipDelta > 0 ? '+' : '';
-        $levers[] = "出荷{$sign}" . (int)$shipDelta . "kg×{$shipWeeks}週";
+        $levers[] = "出荷スポット{$sign}" . (int)$shipDelta . 'kg';
     }
     if ($plantExtra['planted'] > 0) {
         $levers[] = '明日定植' . (int)$plantExtra['planted'] . '床';
+    }
+    if ($earlyDays > 0) {
+        $levers[] = '前倒し収穫' . $earlyDays . '日'
+            . ($scOpen['shifted_beds'] > 0 ? '（' . (int)$scOpen['shifted_beds'] . '床）' : '');
     }
     if (!$levers) {
         $levers[] = 'レバーなし（モデル残のまま）';
@@ -263,8 +287,11 @@ function gf_break_sim_combo(mysqli $link, array $opts = [], int $weeksAhead = 16
         'eff_yield_kg' => round($effKg, 0),
         'use_eff' => $useEff,
         'ship_delta' => $shipDelta,
-        'ship_weeks' => $shipWeeks,
         'plant_n' => $plantN,
+        'early_days' => $earlyDays,
+        'early_extra' => [
+            'shifted_beds' => (int)$scOpen['shifted_beds'],
+        ],
         'plant_extra' => $plantExtra,
         'recent' => $recent,
         'baseline' => $baseSum,

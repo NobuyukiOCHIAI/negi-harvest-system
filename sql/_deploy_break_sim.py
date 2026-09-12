@@ -53,10 +53,12 @@ require '{REMOTE}/db.php';
 require '{REMOTE}/lib/break_sim.php';
 $b0 = gf_break_sim_combo($link, [], 16);
 $b1 = gf_break_sim_combo($link, ['eff' => 160], 16);
-$b2 = gf_break_sim_combo($link, ['ship_delta' => -50, 'ship_weeks' => 4], 16);
+$b2 = gf_break_sim_combo($link, ['ship_delta' => -50], 16);
 $b3 = gf_break_sim_combo($link, ['plant_n' => 999], 16);
-$b4 = gf_break_sim_combo($link, ['eff' => 160, 'ship_delta' => -50, 'ship_weeks' => 4, 'plant_n' => 999], 16);
-foreach (['none'=>$b0,'eff160'=>$b1,'ship-50x4'=>$b2,'plant_all'=>$b3,'combo'=>$b4] as $k=>$b) {{
+$b4 = gf_break_sim_combo($link, ['early_days' => 7], 16);
+$b5 = gf_break_sim_combo($link, ['early_days' => 14], 16);
+$b6 = gf_break_sim_combo($link, ['eff' => 160, 'ship_delta' => -50, 'plant_n' => 999, 'early_days' => 7], 16);
+foreach (['none'=>$b0,'eff160'=>$b1,'ship-50'=>$b2,'plant_all'=>$b3,'early7'=>$b4,'early14'=>$b5,'combo'=>$b6] as $k=>$b) {{
   $lab = str_replace(['·','×'], ['|','x'], $b['lever_label']);
   echo $k.' base='.$b['baseline']['runway_weeks'].' sc='.$b['scenario']['runway_weeks'].' d='.$b['delta_runway'].' | '.$lab.PHP_EOL;
 }}
