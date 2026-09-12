@@ -51,8 +51,15 @@ def main() -> int:
     probe = f"""<?php
 require '{REMOTE}/db.php';
 require '{REMOTE}/lib/break_sim.php';
-$b = gf_break_sim_eff_yield($link, 160, 16);
-echo 'base='.$b['baseline']['runway_weeks'].' sc='.$b['scenario']['runway_weeks'].' d='.$b['delta_runway'].' sug='.$b['suggested_kg'].PHP_EOL;
+$b0 = gf_break_sim_combo($link, [], 16);
+$b1 = gf_break_sim_combo($link, ['eff' => 160], 16);
+$b2 = gf_break_sim_combo($link, ['ship_delta' => -50, 'ship_weeks' => 4], 16);
+$b3 = gf_break_sim_combo($link, ['plant_n' => 999], 16);
+$b4 = gf_break_sim_combo($link, ['eff' => 160, 'ship_delta' => -50, 'ship_weeks' => 4, 'plant_n' => 999], 16);
+foreach (['none'=>$b0,'eff160'=>$b1,'ship-50x4'=>$b2,'plant_all'=>$b3,'combo'=>$b4] as $k=>$b) {{
+  $lab = str_replace(['·','×'], ['|','x'], $b['lever_label']);
+  echo $k.' base='.$b['baseline']['runway_weeks'].' sc='.$b['scenario']['runway_weeks'].' d='.$b['delta_runway'].' | '.$lab.PHP_EOL;
+}}
 """
     remote_php = f"{REMOTE}/sql/_probe_break_sim_tmp.php"
     sftp = ssh.open_sftp()

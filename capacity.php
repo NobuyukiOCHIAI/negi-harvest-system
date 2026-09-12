@@ -96,7 +96,15 @@ $effParam = isset($_GET['eff']) ? (float)$_GET['eff'] : null;
 if ($effParam !== null && $effParam <= 0) {
     $effParam = null;
 }
-$breakSim = gf_break_sim_eff_yield($link, $effParam, 16);
+$shipDelta = isset($_GET['ship_delta']) ? (float)$_GET['ship_delta'] : 0.0;
+$shipWeeks = isset($_GET['ship_weeks']) ? (int)$_GET['ship_weeks'] : 4;
+$plantN = isset($_GET['plant_n']) ? (int)$_GET['plant_n'] : 0;
+$breakSim = gf_break_sim_combo($link, [
+    'eff' => $effParam,
+    'ship_delta' => $shipDelta,
+    'ship_weeks' => $shipWeeks,
+    'plant_n' => $plantN,
+], 16);
 $plantExecLate = $delayN;
 $nearCutoff = supply_near_week_cutoff();
 $expandShown = 0;
@@ -239,49 +247,80 @@ $simModeLabel = $simParam === 'level_weak' ? '平準化（弱）'
     $recentN = (int)($bs['recent']['n'] ?? 0);
     $baseBreak = $bs['baseline']['first_break_week'] ?? null;
     $scBreak = $bs['scenario']['first_break_week'] ?? null;
+    $shipDeltaV = (float)$bs['ship_delta'];
+    $shipWeeksV = (int)$bs['ship_weeks'];
+    $plantNV = (int)$bs['plant_n'];
+    $emptyN = (int)$bs['empty_beds'];
+    $plantedN = (int)($bs['plant_extra']['planted'] ?? 0);
+    $useEff = !empty($bs['use_eff']);
+    $qBase = 'sim=' . rawurlencode($simParam);
   ?>
 
   <section class="sim-hero" id="sec-break-sim">
-    <h2>打ち手① 実効収量で残量を置き換える</h2>
+    <h2>割れ回避シミュレーション（組み合わせ可）</h2>
     <p class="page-sub mb-2">
-      直近完了床の平均（ゴミ除く<?= $recentN ? '・n=' . $recentN : '' ?>）は約 <strong><?= $sug ?>kg</strong>。
-      栽培中の残も同じ実力と見ると、割れは先延ばしできるか？
+      現状の定植済ベースに対し、実効収量・出荷加減・空き定植を試し、割れ週を先延ばしできるか見る。DBは書き換えない。
     </p>
     <form class="sim-form" method="get" action="capacity.php">
       <input type="hidden" name="sim" value="<?= htmlspecialchars($simParam, ENT_QUOTES, 'UTF-8') ?>">
       <div>
-        <label for="eff">実効収量（kg/床）</label>
-        <input id="eff" type="number" name="eff" min="40" max="400" step="5" value="<?= $effNow ?>">
+        <label for="eff">① 実効収量 kg/床</label>
+        <input id="eff" type="number" name="eff" min="40" max="400" step="5"
+               value="<?= $useEff ? $effNow : $sug ?>" placeholder="<?= $sug ?>">
+      </div>
+      <div>
+        <label for="ship_delta">② 出荷加減 kg/週</label>
+        <input id="ship_delta" type="number" name="ship_delta" min="-500" max="500" step="10" value="<?= (int)$shipDeltaV ?>">
+      </div>
+      <div>
+        <label for="ship_weeks">② 対象週数</label>
+        <input id="ship_weeks" type="number" name="ship_weeks" min="1" max="12" step="1" value="<?= max(1, $shipWeeksV) ?>">
+      </div>
+      <div>
+        <label for="plant_n">③ 明日定植する空き床</label>
+        <input id="plant_n" type="number" name="plant_n" min="0" max="999" step="1" value="<?= $plantNV >= 999 ? $emptyN : max(0, $plantNV) ?>">
       </div>
       <button type="submit" class="btn btn-success btn-sm">試す</button>
-      <a class="btn btn-outline-secondary btn-sm" href="?eff=<?= $sug ?>&sim=<?= urlencode($simParam) ?>">平均<?= $sug ?>kg</a>
-      <a class="btn btn-outline-secondary btn-sm" href="?eff=160&sim=<?= urlencode($simParam) ?>">160kg</a>
     </form>
+    <div class="d-flex flex-wrap gap-2 mt-2 mb-2">
+      <a class="btn btn-outline-secondary btn-sm" href="?<?= $qBase ?>&eff=<?= $sug ?>">①平均<?= $sug ?>kg</a>
+      <a class="btn btn-outline-secondary btn-sm" href="?<?= $qBase ?>&eff=160">①160kg</a>
+      <a class="btn btn-outline-secondary btn-sm" href="?<?= $qBase ?><?= $useEff ? '&eff=' . $effNow : '' ?>&ship_delta=-50&ship_weeks=4">②出荷−50×4週</a>
+      <a class="btn btn-outline-secondary btn-sm" href="?<?= $qBase ?><?= $useEff ? '&eff=' . $effNow : '' ?>&plant_n=999">③空き全床を明日定植(<?= $emptyN ?>)</a>
+      <a class="btn btn-outline-secondary btn-sm" href="?<?= $qBase ?>&eff=<?= $sug ?>&ship_delta=-50&ship_weeks=4&plant_n=999">①②③まとめて</a>
+    </div>
+    <p class="page-sub mb-2">
+      直近平均≈<?= $sug ?>kg<?= $recentN ? "（n={$recentN}）" : '' ?> · 空き床 <?= $emptyN ?> ·
+      適用中: <strong><?= htmlspecialchars((string)$bs['lever_label'], ENT_QUOTES, 'UTF-8') ?></strong>
+      <?php if ($plantedN > 0): ?>
+        · 明日定植<?= $plantedN ?>床→収穫週 <?= h_sunday_week($bs['plant_extra']['harvest_week'] ?? null) ?>
+        （約<?= (int)$bs['plant_extra']['days'] ?>日・<?= (int)$bs['plant_extra']['yield_kg'] ?>kg/床）
+      <?php endif; ?>
+    </p>
 
     <div class="sim-compare">
       <div class="sim-box">
         <div class="s-lab">現状（モデル残）</div>
         <div class="s-val"><?= $baseRun ?><span style="font-size:0.85rem">週</span></div>
-        <div class="s-sub">割れまで · 残合計 <?= number_format($bs['open_remain_baseline'], 0) ?>kg
+        <div class="s-sub">割れまで · 残 <?= number_format($bs['open_remain_baseline'], 0) ?>kg
           <?php if ($baseBreak): ?> · 初回 <?= h_sunday_week($baseBreak) ?><?php endif; ?></div>
       </div>
       <div class="sim-arrow"><?= $delta > 0 ? '+' . $delta : (string)$delta ?>週</div>
       <div class="sim-box after <?= $afterCls ?>">
-        <div class="s-lab">実効 <?= $effNow ?>kg/床</div>
+        <div class="s-lab">シナリオ</div>
         <div class="s-val"><?= $scRun ?><span style="font-size:0.85rem">週</span></div>
-        <div class="s-sub">割れまで · 残合計 <?= number_format($bs['open_remain_scenario'], 0) ?>kg
+        <div class="s-sub">割れまで · 残 <?= number_format($bs['open_remain_scenario'], 0) ?>kg
           <?php if ($scBreak): ?> · 初回 <?= h_sunday_week($scBreak) ?><?php endif; ?></div>
       </div>
     </div>
     <p class="page-sub mb-0">
-      定植済ベース（いまの畑）の比較。DBは書き換えない。計画どおりの本線は下の詳細／<a href="inventory.php">予測</a>。
-      異常の横断は <a href="alerts.php">経営アラート</a>。
+      出荷減は営業依頼の試算。定植は現場の <a href="today.php#sec-plant">今日</a> で実行。異常は <a href="alerts.php">経営アラート</a>。
     </p>
   </section>
 
   <div class="chart-card primary">
-    <div class="chart-title">定植済累計：現状 vs 実効収量</div>
-    <p class="page-sub mb-2"><span class="chart-swatch planted"></span>モデル残 · <span class="chart-swatch sales"></span>実効<?= $effNow ?>kg · 0線が割れ</p>
+    <div class="chart-title">定植済累計：現状 vs シナリオ</div>
+    <p class="page-sub mb-2"><span class="chart-swatch planted"></span>モデル残 · <span class="chart-swatch sales"></span><?= htmlspecialchars((string)$bs['lever_label'], ENT_QUOTES, 'UTF-8') ?> · 0線が割れ</p>
     <div class="chart-wrap tall"><canvas id="breakSimChart"></canvas></div>
   </div>
 
@@ -509,7 +548,7 @@ $simModeLabel = $simParam === 'level_weak' ? '平準化（弱）'
         labels: <?= json_encode($breakSim['chart']['labels'], JSON_UNESCAPED_UNICODE) ?>,
         datasets: [
           G.dsPlanted('現状（モデル残）', <?= json_encode($breakSim['chart']['baseline_cum']) ?>),
-          G.dsSales('実効収量シナリオ', <?= json_encode($breakSim['chart']['scenario_cum']) ?>),
+          G.dsSales('シナリオ', <?= json_encode($breakSim['chart']['scenario_cum']) ?>),
         ],
       },
       options: { ...baseOpt, scales: { y: G.yKg(false) } },
