@@ -750,6 +750,19 @@ body.field-entry .field-submit {
   line-height: 1.2;
 }
 
+.recent-cycles-frame {
+  border: 1px solid var(--gf-line);
+  border-radius: var(--gf-radius);
+  background: #fff;
+  padding: 0.7rem 0.75rem 0.1rem;
+}
+.recent-cycles-frame .cycles-more {
+  display: block;
+  width: 100%;
+  margin: 0 0 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
 .recent-cycle {
   background: var(--gf-card);
   border: 1px solid var(--gf-line);
