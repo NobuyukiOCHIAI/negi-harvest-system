@@ -762,6 +762,10 @@ body.field-entry .field-submit {
   margin: 0 0 0.7rem;
   font-weight: 800;
   letter-spacing: 0.02em;
+  scroll-margin-top: 0.75rem;
+}
+.recent-cycles-frame .recent-cycle {
+  scroll-margin-top: 0.75rem;
 }
 .recent-cycle {
   background: var(--gf-card);
