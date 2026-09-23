@@ -7,6 +7,7 @@
  */
 require_once __DIR__ . '/gcal_shipments.php';
 require_once __DIR__ . '/plant_schedule.php';
+require_once __DIR__ . '/cohort_adjust.php';
 
 /** 空き後の定植猶予（日） */
 const GF_REPLANT_GRACE_DAYS = 5;
@@ -34,6 +35,7 @@ function rotation_open_cycles(mysqli $link): array
 SELECT
   c.bed_id,
   b.name AS bed_name,
+  b.group_type,
   COALESCE(pr.postproc_total_kg, pr.pred_total_kg) AS forecast_kg,
   (SELECT COALESCE(SUM(h.harvest_kg), 0) FROM harvests h WHERE h.cycle_id = c.id) AS harvested_kg,
   DATE_ADD(c.plant_date, INTERVAL CAST(ROUND(pr.pred_days) AS SIGNED) DAY) AS expected_harvest
@@ -64,6 +66,7 @@ WHERE c.harvest_end IS NULL AND b.active = 1
         $out[] = [
             'bed_id' => (int)$row['bed_id'],
             'bed_name' => $row['bed_name'],
+            'group_type' => (string)$row['group_type'],
             'forecast_kg' => $forecast,
             'harvested_kg' => $harvested,
             'remain_kg' => $remain,
@@ -103,6 +106,7 @@ function rotation_bed_states(mysqli $link): array
         $busy[$bedId] = [
             'bed_id' => $bedId,
             'name' => $oc['bed_name'],
+            'group_type' => (string)($oc['group_type'] ?? ''),
             'free_date' => $oc['free_date'],
             'source' => 'open_cycle',
         ];
@@ -111,7 +115,7 @@ function rotation_bed_states(mysqli $link): array
     // 空きベッド（未完了なし）
     $res = mysqli_query(
         $link,
-        "SELECT b.id AS bed_id, b.name,
+        "SELECT b.id AS bed_id, b.name, b.group_type,
                 (SELECT MAX(c.harvest_end) FROM cycles c WHERE c.bed_id = b.id) AS last_end
          FROM beds b
          WHERE b.active = 1
@@ -127,6 +131,7 @@ function rotation_bed_states(mysqli $link): array
             $busy[$bedId] = [
                 'bed_id' => $bedId,
                 'name' => $row['name'],
+                'group_type' => (string)$row['group_type'],
                 'free_date' => $last,
                 'source' => 'empty',
             ];
@@ -178,7 +183,7 @@ function rotation_planned_by_week(mysqli $link, float $defaultDays, float $defau
 
     $res = mysqli_query(
         $link,
-        "SELECT s.planned_plant_date, s.expected_days, s.expected_yield_kg, s.bed_id
+        "SELECT s.planned_plant_date, s.expected_days, s.expected_yield_kg, s.bed_id, b.group_type
          FROM plant_schedule s
          JOIN beds b ON b.id = s.bed_id AND b.active = 1
          WHERE s.status IN ('planned','approved')"
@@ -191,6 +196,7 @@ function rotation_planned_by_week(mysqli $link, float $defaultDays, float $defau
         $days = $row['expected_days'] !== null ? (float)$row['expected_days'] : $defaultDays;
         $kg = $row['expected_yield_kg'] !== null ? (float)$row['expected_yield_kg'] : $defaultYield;
         $plantEff = rotation_effective_plant_date((string)$row['planned_plant_date']);
+        $kg = gf_cohort_scale_yield($link, $plantEff, (string)$row['group_type'], $kg);
         $w = plant_schedule_harvest_week_from_plant($plantEff, $days);
         // 栽培中ベッドの今サイクル収穫週と同週の計画は二重計上しない
         if (isset($openWeekByBed[$bedId]) && $openWeekByBed[$bedId] === $w) {
@@ -222,7 +228,8 @@ function rotation_simulate_replant(
     float $avgDays,
     float $avgYield,
     int $graceDays = GF_REPLANT_GRACE_DAYS,
-    array $skipBeds = []
+    array $skipBeds = [],
+    ?mysqli $link = null
 ): array {
     $today = date('Y-m-d');
     $byWeek = [];
@@ -252,17 +259,21 @@ function rotation_simulate_replant(
             if ($week > $horizonEnd) {
                 break;
             }
+            $yield = $avgYield;
+            if ($link instanceof mysqli) {
+                $yield = gf_cohort_scale_yield($link, $plant, (string)($b['group_type'] ?? ''), $avgYield);
+            }
             if (!isset($byWeek[$week])) {
                 $byWeek[$week] = 0.0;
             }
-            $byWeek[$week] += $avgYield;
+            $byWeek[$week] += $yield;
             $events[] = [
                 'bed_id' => $bedId,
                 'bed_name' => $b['name'],
                 'plant_date' => $plant,
                 'harvest_date' => $harvest,
                 'harvest_week' => $week,
-                'yield_kg' => $avgYield,
+                'yield_kg' => $yield,
                 'virtual' => true,
             ];
             $cycles++;
@@ -417,7 +428,8 @@ function rotation_capacity_outlook(mysqli $link, int $weeksAhead = 16): array
         $avgDays,
         $avgYield,
         GF_REPLANT_GRACE_DAYS,
-        $skip
+        $skip,
+        $link
     );
 
     // 出荷コミット（確定ライン）: GCAL のみ
