@@ -255,6 +255,36 @@ $simModeLabel = $simParam === 'level_weak' ? '平準化（弱）'
     $shiftedBeds = (int)($bs['early_extra']['shifted_beds'] ?? 0);
     $useEff = !empty($bs['use_eff']);
     $qBase = 'sim=' . rawurlencode($simParam);
+    // ショートカットは加算トグル。押したレバーだけ切り替え、他の選択は残す。
+    $leverNow = [
+        'eff' => $useEff ? (string)(int)$effNow : null,
+        'ship_delta' => abs($shipDeltaV) >= 0.5 ? (string)(int)$shipDeltaV : null,
+        'plant_n' => $plantNV > 0 ? (string)$plantNV : null,
+        'early_days' => $earlyDaysV > 0 ? (string)$earlyDaysV : null,
+    ];
+    $leverHref = static function (array $set) use ($qBase, $leverNow): string {
+        $p = $leverNow;
+        foreach ($set as $k => $v) {
+            $p[$k] = ($v === null || $v === '') ? null : (string)$v;
+        }
+        $parts = [$qBase];
+        foreach (['eff', 'ship_delta', 'plant_n', 'early_days'] as $k) {
+            if ($p[$k] !== null && $p[$k] !== '') {
+                $parts[] = rawurlencode($k) . '=' . rawurlencode((string)$p[$k]);
+            }
+        }
+        return '?' . implode('&', $parts);
+    };
+    $btnCls = static function (bool $on): string {
+        return 'btn btn-sm ' . ($on ? 'btn-primary' : 'btn-outline-secondary');
+    };
+    $onEffSug = $useEff && (int)$effNow === (int)$sug;
+    $onEff160 = $useEff && (int)$effNow === 160;
+    $onShip50 = (int)$shipDeltaV === -50;
+    $onPlantAll = $plantNV >= 999 || ($emptyN > 0 && $plantNV >= $emptyN);
+    $onEarly7 = $earlyDaysV === 7;
+    $onEarly14 = $earlyDaysV === 14;
+    $onAll = $onEffSug && $onShip50 && $onPlantAll && $onEarly7;
   ?>
 
   <section class="sim-hero" id="sec-break-sim">
@@ -281,13 +311,13 @@ $simModeLabel = $simParam === 'level_weak' ? '平準化（弱）'
       <button type="submit" class="btn btn-success btn-sm">試す</button>
     </form>
     <div class="d-flex flex-wrap gap-2 mt-2 mb-2">
-      <a class="btn btn-outline-secondary btn-sm" href="?<?= $qBase ?>&eff=<?= $sug ?>">①平均<?= $sug ?>kg</a>
-      <a class="btn btn-outline-secondary btn-sm" href="?<?= $qBase ?>&eff=160">①160kg</a>
-      <a class="btn btn-outline-secondary btn-sm" href="?<?= $qBase ?><?= $useEff ? '&eff=' . $effNow : '' ?>&ship_delta=-50">②出荷−50</a>
-      <a class="btn btn-outline-secondary btn-sm" href="?<?= $qBase ?><?= $useEff ? '&eff=' . $effNow : '' ?>&plant_n=999">③空き全床を明日定植(<?= $emptyN ?>)</a>
-      <a class="btn btn-outline-secondary btn-sm" href="?<?= $qBase ?><?= $useEff ? '&eff=' . $effNow : '' ?>&early_days=7">④前倒し7日</a>
-      <a class="btn btn-outline-secondary btn-sm" href="?<?= $qBase ?><?= $useEff ? '&eff=' . $effNow : '' ?>&early_days=14">④前倒し14日</a>
-      <a class="btn btn-outline-secondary btn-sm" href="?<?= $qBase ?>&eff=<?= $sug ?>&ship_delta=-50&plant_n=999&early_days=7">①〜④まとめて</a>
+      <a class="<?= $btnCls($onEffSug) ?>" href="<?= htmlspecialchars($leverHref($onEffSug ? ['eff' => null] : ['eff' => (string)(int)$sug]), ENT_QUOTES, 'UTF-8') ?>">①平均<?= $sug ?>kg</a>
+      <a class="<?= $btnCls($onEff160) ?>" href="<?= htmlspecialchars($leverHref($onEff160 ? ['eff' => null] : ['eff' => '160']), ENT_QUOTES, 'UTF-8') ?>">①160kg</a>
+      <a class="<?= $btnCls($onShip50) ?>" href="<?= htmlspecialchars($leverHref($onShip50 ? ['ship_delta' => null] : ['ship_delta' => '-50']), ENT_QUOTES, 'UTF-8') ?>">②出荷−50</a>
+      <a class="<?= $btnCls($onPlantAll) ?>" href="<?= htmlspecialchars($leverHref($onPlantAll ? ['plant_n' => null] : ['plant_n' => '999']), ENT_QUOTES, 'UTF-8') ?>">③空き全床を明日定植(<?= $emptyN ?>)</a>
+      <a class="<?= $btnCls($onEarly7) ?>" href="<?= htmlspecialchars($leverHref($onEarly7 ? ['early_days' => null] : ['early_days' => '7']), ENT_QUOTES, 'UTF-8') ?>">④前倒し7日</a>
+      <a class="<?= $btnCls($onEarly14) ?>" href="<?= htmlspecialchars($leverHref($onEarly14 ? ['early_days' => null] : ['early_days' => '14']), ENT_QUOTES, 'UTF-8') ?>">④前倒し14日</a>
+      <a class="<?= $btnCls($onAll) ?>" href="<?= htmlspecialchars($leverHref(['eff' => (string)(int)$sug, 'ship_delta' => '-50', 'plant_n' => '999', 'early_days' => '7']), ENT_QUOTES, 'UTF-8') ?>">①〜④まとめて</a>
     </div>
     <p class="page-sub mb-2">
       直近平均≈<?= $sug ?>kg<?= $recentN ? "（n={$recentN}）" : '' ?> · 空き床 <?= $emptyN ?> ·
