@@ -233,12 +233,14 @@ foreach ($detailsByWeek as $w => $beds) {
 $grandAvgDays = $totalBeds > 0 ? $sumDaysWeighted / $totalBeds : null;
 $grandAvgKg = $totalBeds > 0 ? $sumAvgYieldWeighted / $totalBeds : null;
 
+// 直近チャートは当週以降のみ（確定＝過去週は週次明細側。累計余剰の数値は過去から継続）
 $chartLabels = [];
 $chartFc = [];
 $chartShip = [];
 $chartSurplus = [];
 $chartCurrentIdx = null;
-foreach (array_slice($rows, 0, 10) as $ci => $cr) {
+$chartRows = array_values(array_filter($rows, static fn($r) => empty($r['is_elapsed'])));
+foreach (array_slice($chartRows, 0, 10) as $ci => $cr) {
     $chartLabels[] = format_sunday_week($cr['week_start_date']);
     $chartFc[] = round((float)$cr['forecast_kg'], 1);
     $chartShip[] = $cr['ship_kg'] === null ? 0 : round((float)$cr['ship_kg'], 1);
