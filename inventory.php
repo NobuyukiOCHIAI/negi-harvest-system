@@ -233,15 +233,14 @@ foreach ($detailsByWeek as $w => $beds) {
 $grandAvgDays = $totalBeds > 0 ? $sumDaysWeighted / $totalBeds : null;
 $grandAvgKg = $totalBeds > 0 ? $sumAvgYieldWeighted / $totalBeds : null;
 
-// 直近チャートは当週以降のみ（確定＝過去週は週次明細側）。
-// 表示週数は需給SIMの定植済累計と同じ（16週）。途中で切ると割れが見えず齟齬に見える。
+// 直近チャートは当週以降のみ・8週（確定＝過去週は週次明細側）。
 $chartLabels = [];
 $chartFc = [];
 $chartShip = [];
 $chartSurplus = [];
 $chartCurrentIdx = null;
 $chartRows = array_values(array_filter($rows, static fn($r) => empty($r['is_elapsed'])));
-foreach (array_slice($chartRows, 0, 16) as $ci => $cr) {
+foreach (array_slice($chartRows, 0, 8) as $ci => $cr) {
     $chartLabels[] = format_sunday_week($cr['week_start_date']);
     $chartFc[] = round((float)$cr['forecast_kg'], 1);
     $chartShip[] = $cr['ship_kg'] === null ? 0 : round((float)$cr['ship_kg'], 1);
@@ -327,12 +326,12 @@ $promiseSum = gf_promise_vs_capacity_summary($link, 8);
     <div class="chart-title">直近週 · 定植済予測 / 残出荷 / 累計余剰</div>
     <p class="page-sub mb-2">
       緑=その週の定植済予測（残量） · 橙=出荷残 · 青破線=累計余剰（過去から積み、各週で残出荷を差引）。
-      <strong>在庫割れ＝青が橙を下回る週</strong>（需給の初回割れと同じ）。累計がプラスでも、残出荷より少なければ割れ。
+      <strong>在庫割れの目安＝青が橙を下回る週</strong>。需給SIMは差引後在庫の0線で割れを判定（役割が違う）。
       <?php if ($overdueCarryKg > 0): ?>
         過去週で <?= number_format($overdueCarryKg, 0) ?>kg（<?= (int)$overdueBedN ?>床）まで積み上げ済み。
       <?php endif; ?>
       <?php if ($nextShort): ?>
-        初回割れ <?= htmlspecialchars($nextShortLabel, ENT_QUOTES, 'UTF-8') ?>（余剰 <?= number_format((float)$nextShortSurplus, 0) ?>kg ＜ 残出荷）。
+        初回（青＜橙） <?= htmlspecialchars($nextShortLabel, ENT_QUOTES, 'UTF-8') ?>。
       <?php endif; ?>
       打ち手の試行は <a href="capacity.php">需給</a>。
     </p>
