@@ -353,7 +353,13 @@ $simModeLabel = $simParam === 'level_weak' ? '平準化（弱）'
 
   <div class="chart-card primary">
     <div class="chart-title">定植済累計：現状 vs シナリオ</div>
-    <p class="page-sub mb-2"><span class="chart-swatch planted"></span>モデル残 · <span class="chart-swatch sales"></span><?= htmlspecialchars((string)$bs['lever_label'], ENT_QUOTES, 'UTF-8') ?> · 0線が割れ</p>
+    <p class="page-sub mb-2">
+      <span class="chart-swatch planted"></span>モデル残 ·
+      <span class="chart-swatch sales"></span><?= htmlspecialchars((string)$bs['lever_label'], ENT_QUOTES, 'UTF-8') ?> ·
+      0線が割れ。
+      <strong>レバーなしの線＝予測の青破線（累計余剰）と同一系列</strong>。
+      本線の見通しは <a href="inventory.php">予測</a>。
+    </p>
     <div class="chart-wrap tall"><canvas id="breakSimChart"></canvas></div>
   </div>
 
