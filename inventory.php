@@ -4,9 +4,9 @@
  * - 週=日曜起点
  * - ママイキ(出荷残)= その週の出荷予定のうち ship_date > 今日
  *   （出荷当日は収穫済み扱い。当日分は残に含めない）
- * - ママイキ(在庫差)= 累積(収穫予測 − 出荷残)
- * - 過去週も収穫予測>0 または出荷残>0 なら表示（グレー）
- * - 表示上限: 今週起算で3か月先まで
+ * - ママイキ(在庫差)= 累積(定植済予測残 − 出荷残)。過去週の未収穫も含めゼロ起算しない
+ * - 週次明細には未収穫ベッドを全て掲載（過去週・収穫途中の残を含む）
+ * - 表示上限: 今週起算で3か月先まで（過去週は未収穫があるもののみ）
  */
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/lib/gcal_shipments.php';
@@ -38,7 +38,11 @@ function inv_cycle_list_html(array $details): string
     foreach ($rows as $d) {
         $href = 'bed_cycles.php?bed_id=' . (int)$d['bed_id'];
         $html .= '<tr>';
-        $html .= '<td><a href="' . $href . '">' . htmlspecialchars((string)$d['bed_name'], ENT_QUOTES, 'UTF-8') . '</a></td>';
+        $html .= '<td><a href="' . $href . '">' . htmlspecialchars((string)$d['bed_name'], ENT_QUOTES, 'UTF-8') . '</a>';
+        if (!empty($d['is_overdue'])) {
+            $html .= ' <span class="badge-status late">遅延</span>';
+        }
+        $html .= '</td>';
         $html .= '<td>' . h_ymd($d['expected_harvest'] ?? null) . '</td>';
         $html .= '<td class="text-end">' . htmlspecialchars((string)$d['remain_kg'], ENT_QUOTES, 'UTF-8') . 'kg</td>';
         $html .= '</tr>';
@@ -52,49 +56,14 @@ $today = date('Y-m-d');
 $currentWeek = gcal_week_start_sunday($today);
 $horizonEnd = date('Y-m-d', strtotime('+3 months', strtotime($currentWeek)));
 
-$sql = "
-SELECT
-  c.id AS cycle_id,
-  c.bed_id,
-  b.name AS bed_name,
-  c.plant_date,
-  c.harvest_start,
-  pr.pred_days,
-  pr.pred_total_kg,
-  pr.postproc_total_kg,
-  COALESCE(pr.postproc_total_kg, pr.pred_total_kg) AS forecast_kg,
-  DATE_ADD(c.plant_date, INTERVAL CAST(ROUND(pr.pred_days) AS SIGNED) DAY) AS expected_harvest,
-  DATE_SUB(
-    DATE_ADD(c.plant_date, INTERVAL CAST(ROUND(pr.pred_days) AS SIGNED) DAY),
-    INTERVAL (DAYOFWEEK(DATE_ADD(c.plant_date, INTERVAL CAST(ROUND(pr.pred_days) AS SIGNED) DAY)) - 1) DAY
-  ) AS week_start_date,
-  (SELECT COALESCE(SUM(h.harvest_kg),0) FROM harvests h WHERE h.cycle_id = c.id) AS harvested_kg
-FROM cycles c
-JOIN beds b ON b.id = c.bed_id
-JOIN predictions pr
-  ON pr.cycle_id = c.id
- AND NOT EXISTS (
-       SELECT 1 FROM predictions p2
-        WHERE p2.cycle_id = pr.cycle_id
-          AND p2.created_at > pr.created_at
-     )
-WHERE c.harvest_end IS NULL
-  AND b.active = 1
-  AND pr.pred_days IS NOT NULL
-ORDER BY week_start_date ASC, b.name ASC, c.id ASC
-";
-
+// 週バケツ=定植時予測日（今日の収穫候補と同じ）。kg=最新有効予測の残。
 $detailsByWeek = [];
-$res = mysqli_query($link, $sql);
-if ($res) {
-    while ($row = mysqli_fetch_assoc($res)) {
-        $w = $row['week_start_date'];
-        if (!isset($detailsByWeek[$w])) {
-            $detailsByWeek[$w] = [];
-        }
-        $detailsByWeek[$w][] = $row;
+foreach (supply_open_inventory_cycle_rows($link, $today) as $row) {
+    $w = $row['week_start_date'];
+    if (!isset($detailsByWeek[$w])) {
+        $detailsByWeek[$w] = [];
     }
-    mysqli_free_result($res);
+    $detailsByWeek[$w][] = $row;
 }
 
 // 週の出荷コミット（確定=GCALのみ）
@@ -177,6 +146,7 @@ $totalBeds = 0;
 $totalForecast = 0.0;
 $sumDaysWeighted = 0.0;
 $sumAvgYieldWeighted = 0.0;
+$pastFcTotal = 0.0;
 
 foreach ($weeks as $w) {
     if ($w > $horizonEnd) {
@@ -188,7 +158,7 @@ foreach ($weeks as $w) {
     $sumKg = 0.0;
     $sumDays = 0.0;
     foreach ($beds as $b) {
-        $sumKg += (float)$b['forecast_kg'];
+        $sumKg += (float)($b['remain_kg'] ?? max(0.0, (float)$b['forecast_kg'] - (float)($b['harvested_kg'] ?? 0)));
         $sumDays += (float)$b['pred_days'];
     }
     $avgDays = $n > 0 ? $sumDays / $n : null;
@@ -197,19 +167,15 @@ foreach ($weeks as $w) {
     $source = $shipSourceByWeek[$w] ?? null;
     $commit = $shipCommitByWeek[$w] ?? null;
 
-    // 日次イベントがある週: 明日以降の合計のみ（当日分は収穫済みで除外）
-    // イベント週で残0 → plan の728等に戻さない
     if (isset($eventWeeks[$w])) {
         $shipRemain = (float)($remainingByWeek[$w] ?? 0);
         if ($source === null) {
             $source = 'gcal';
         }
     } elseif ($commit !== null) {
-        // イベント無し（または未同期）の plan/manual
         if ($w < $currentWeek) {
             $shipRemain = 0.0;
         } else {
-            // 当日までの日次出荷があれば、計画全量から差し引く（出荷当日=収穫済）
             $shipped = (float)($shippedThroughTodayByWeek[$w] ?? 0);
             $shipRemain = max(0.0, (float)$commit - $shipped);
         }
@@ -217,15 +183,22 @@ foreach ($weeks as $w) {
         $shipRemain = null;
     }
 
-    // 収穫予測0 かつ 出荷残0/なし → 非表示
+    // 未収穫が無い過去週は出さない
+    if ($w < $currentWeek && $sumKg <= 0.0) {
+        continue;
+    }
     if ($sumKg <= 0.0 && ($shipRemain === null || $shipRemain <= 0.0)) {
         continue;
     }
 
+    $shipForSurplus = (float)($shipRemain ?? 0);
     if ($surplus === null) {
-        $surplus = $sumKg - (float)($shipRemain ?? 0);
+        $surplus = $sumKg - $shipForSurplus;
     } else {
-        $surplus = $surplus + $sumKg - (float)($shipRemain ?? 0);
+        $surplus = $surplus + $sumKg - $shipForSurplus;
+    }
+    if ($w < $currentWeek) {
+        $pastFcTotal += $sumKg;
     }
 
     $rows[] = [
@@ -239,6 +212,7 @@ foreach ($weeks as $w) {
         'ship_kg' => $shipRemain,
         'ship_source' => $source,
         'surplus_kg' => $surplus,
+        'overdue_carry_kg' => $pastFcTotal,
         'details' => $beds,
     ];
 
@@ -246,6 +220,14 @@ foreach ($weeks as $w) {
     $totalForecast += $sumKg;
     $sumDaysWeighted += $sumDays;
     $sumAvgYieldWeighted += $sumKg;
+}
+$overdueCarryKg = $pastFcTotal;
+$overdueBedN = 0;
+foreach ($detailsByWeek as $w => $beds) {
+    if ($w >= $currentWeek) {
+        continue;
+    }
+    $overdueBedN += count($beds);
 }
 
 $grandAvgDays = $totalBeds > 0 ? $sumDaysWeighted / $totalBeds : null;
@@ -277,16 +259,18 @@ $nextShortLabel = $nextShort
 $nextShortSurplus = $nextShort !== null ? (float)$nextShort['surplus_kg'] : null;
 
 $trust = trust_outlook_bundle($link, 16);
+$outlookWeeks = array_slice(
+    rotation_capacity_outlook($link, 16)['weeks'] ?? [],
+    0,
+    14
+);
 $trustCumLabels = [];
-$trustCumRot = [];
-$trustCumOpen = [];
-foreach (array_slice($trust['with_rotation'], 0, 14) as $tw) {
+foreach ($outlookWeeks as $tw) {
     $trustCumLabels[] = format_sunday_week($tw['week']);
-    $trustCumRot[] = (float)$tw['cum_surplus_kg'];
 }
-foreach (array_slice($trust['open_only'], 0, 14) as $tw) {
-    $trustCumOpen[] = (float)$tw['cum_surplus_kg'];
-}
+// 定植済／計画は同じ土台（予測ページの累計余剰）から始める（正本 §2）
+$trustCumRot = supply_cum_surplus_continuous($link, $outlookWeeks, true);
+$trustCumOpen = supply_cum_surplus_continuous($link, $outlookWeeks, false);
 $promiseSum = gf_promise_vs_capacity_summary($link, 8);
 ?>
 <!DOCTYPE html>
@@ -337,7 +321,14 @@ $promiseSum = gf_promise_vs_capacity_summary($link, 8);
   <?php if ($chartLabels): ?>
   <div class="chart-card">
     <div class="chart-title">直近週 · 定植済予測 / 残出荷 / 累計余剰</div>
-    <p class="page-sub mb-2">二次。いま畑に植わっている分。能力・拡大案は <a href="capacity.php">需給</a>。</p>
+    <p class="page-sub mb-2">
+      緑=その週の定植済予測（残量） · 橙=出荷残 · 青破線=累計余剰（過去週の未収穫から積み上げ。ゼロ起算しない）。
+      青が橙を下回るとその週は在庫がタイト／割れ寄り。
+      <?php if ($overdueCarryKg > 0): ?>
+        過去週の未収穫残 <?= number_format($overdueCarryKg, 0) ?>kg（<?= (int)$overdueBedN ?>床）を起点に含めています。
+      <?php endif; ?>
+      能力・拡大案は <a href="capacity.php">需給</a>。
+    </p>
     <div class="chart-wrap tall">
       <canvas id="invChart"></canvas>
     </div>
@@ -379,6 +370,11 @@ $promiseSum = gf_promise_vs_capacity_summary($link, 8);
           </button>
           <div class="metric"><div class="m-label">平均kg</div><div class="m-val"><?= $r['avg_kg'] === null ? '—' : number_format($r['avg_kg'], 0) ?></div></div>
         </div>
+        <?php if (!empty($r['is_elapsed'])): ?>
+          <p class="page-sub mb-0 mt-1">過去週・未収穫残（出荷残0）を累計余剰の起点に含む</p>
+        <?php elseif (!empty($r['is_current']) && (float)($r['overdue_carry_kg'] ?? 0) > 0): ?>
+          <p class="page-sub mb-0 mt-1">過去週未収穫 <?= number_format((float)$r['overdue_carry_kg'], 0) ?>kg を累計に含む</p>
+        <?php endif; ?>
         <div class="collapse mt-2" id="<?= $sid ?>">
           <?= inv_cycle_list_html($r['details']) ?>
         </div>

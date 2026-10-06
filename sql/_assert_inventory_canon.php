@@ -10,6 +10,7 @@
 require_once dirname(__DIR__) . '/db.php';
 require_once dirname(__DIR__) . '/lib/supply_ops.php';
 require_once dirname(__DIR__) . '/lib/break_sim.php';
+require_once dirname(__DIR__) . '/lib/overgrow_metrics.php';
 
 $fail = [];
 $ok = [];
@@ -90,6 +91,44 @@ if ($current !== null) {
     } else {
         $ok[] = sprintf('BREAK: chart[0]=%.1f matches inventory surplus', $cum0);
     }
+}
+
+// 不変5: 今日の収穫候補の残は、定植時週の余剰に載る（mid日数で未来へ逃がさない）
+$invCycles = supply_open_inventory_cycle_rows($link, $today);
+$byCycle = [];
+foreach ($invCycles as $r) {
+    $byCycle[(int)$r['cycle_id']] = $r;
+}
+$missing = 0;
+$checked = 0;
+foreach (open_cycle_progress($link) as $op) {
+    $due = !empty($op['harvest_start'])
+        || (!empty($op['expected_harvest']) && $op['expected_harvest'] <= $today);
+    if (!$due) {
+        continue;
+    }
+    $cid = (int)$op['cycle_id'];
+    $inv = $byCycle[$cid] ?? null;
+    if ($inv === null) {
+        // remain 0 なら候補に出ても余剰0は許容
+        continue;
+    }
+    $checked++;
+    $plantExp = (string)($op['expected_harvest'] ?? '');
+    $plantWk = $plantExp !== '' ? gcal_week_start_sunday($plantExp) : '';
+    if ($plantWk !== '' && $inv['week_start_date'] !== $plantWk) {
+        $missing++;
+        $fail[] = sprintf(
+            'WEEK: %s cycle=%d todayWk=%s invWk=%s (mid drift)',
+            $op['bed_name'],
+            $cid,
+            $plantWk,
+            $inv['week_start_date']
+        );
+    }
+}
+if ($checked > 0 && $missing === 0) {
+    $ok[] = sprintf('WEEK: %d harvest-due beds match plant weeks', $checked);
 }
 
 echo "=== inventory canon assert ===\n";

@@ -490,11 +490,161 @@ function supply_sim_commit_series(array $weekRows, array $actions, string $which
 }
 
 /**
+ * 未完了サイクルの収穫週。予測日が今日より前なら当週へ寄せる
+ * （能力・回転 `rotation_open_cycles` 用。予測ページの週次定植済予測には使わない）
+ */
+function supply_open_cycle_week(string $expectedHarvest, ?string $today = null, ?string $currentWeek = null): string
+{
+    $today = $today ?: date('Y-m-d');
+    $currentWeek = $currentWeek ?: gcal_week_start_sunday($today);
+    if ($expectedHarvest === '' || $expectedHarvest < $today) {
+        return $currentWeek;
+    }
+    return gcal_week_start_sunday($expectedHarvest);
+}
+
+/**
+ * 未完了サイクルの在庫明細（予測ページ・累計余剰の正本）
+ *
+ * - kg: 最新 COALESCE(postproc, pred) − 既収穫
+ * - 収穫予定週: **定植時 pred_days**（今日の収穫候補と同じ）。
+ *   mid 再予測で日数が伸びても週を未来へずらさない（超過残が余剰から消える事故を防ぐ）。
+ *
+ * @return list<array{
+ *   cycle_id:int,bed_id:int,bed_name:string,plant_date:?string,
+ *   harvest_start:?string,forecast_kg:float,harvested_kg:float,remain_kg:float,
+ *   expected_harvest:string,week_start_date:string,is_overdue:bool,
+ *   pred_days_plant:?float,pred_days_latest:?float
+ * }>
+ */
+function supply_open_inventory_cycle_rows(mysqli $link, ?string $today = null): array
+{
+    $today = $today ?: date('Y-m-d');
+    $currentWeek = gcal_week_start_sunday($today);
+    $sql = "
+SELECT
+  c.id AS cycle_id,
+  c.bed_id,
+  b.name AS bed_name,
+  c.plant_date,
+  c.harvest_start,
+  (
+    SELECT p.pred_days FROM predictions p
+    WHERE p.cycle_id = c.id
+    ORDER BY
+      CASE WHEN p.model_id LIKE '%plant_plus_w%' THEN 0 ELSE 1 END,
+      p.created_at ASC
+    LIMIT 1
+  ) AS pred_days_plant,
+  (
+    SELECT p.pred_days FROM predictions p
+    WHERE p.cycle_id = c.id
+    ORDER BY p.created_at DESC
+    LIMIT 1
+  ) AS pred_days_latest,
+  (
+    SELECT COALESCE(p.postproc_total_kg, p.pred_total_kg) FROM predictions p
+    WHERE p.cycle_id = c.id
+    ORDER BY p.created_at DESC
+    LIMIT 1
+  ) AS forecast_kg,
+  (SELECT COALESCE(SUM(h.harvest_kg),0) FROM harvests h WHERE h.cycle_id = c.id) AS harvested_kg
+FROM cycles c
+JOIN beds b ON b.id = c.bed_id
+WHERE c.harvest_end IS NULL
+  AND b.active = 1
+ORDER BY c.plant_date ASC, b.name ASC, c.id ASC
+";
+    $out = [];
+    $res = mysqli_query($link, $sql);
+    if (!$res) {
+        return $out;
+    }
+    while ($row = mysqli_fetch_assoc($res)) {
+        $forecast = (float)($row['forecast_kg'] ?? 0);
+        $harvested = (float)($row['harvested_kg'] ?? 0);
+        $remain = max(0.0, $forecast - $harvested);
+        if ($remain <= 0.0) {
+            continue;
+        }
+        $plant = (string)($row['plant_date'] ?? '');
+        $pdPlant = $row['pred_days_plant'] !== null && $row['pred_days_plant'] !== ''
+            ? (float)$row['pred_days_plant'] : null;
+        $pdLatest = $row['pred_days_latest'] !== null && $row['pred_days_latest'] !== ''
+            ? (float)$row['pred_days_latest'] : null;
+        // 週バケツは定植時。無ければ最新。どちらも無ければ載せない。
+        $pdWeek = $pdPlant ?? $pdLatest;
+        if ($plant === '' || $pdWeek === null) {
+            continue;
+        }
+        $expected = date('Y-m-d', strtotime($plant . ' +' . (int)round($pdWeek) . ' day'));
+        $w = gcal_week_start_sunday($expected);
+        $out[] = [
+            'cycle_id' => (int)$row['cycle_id'],
+            'bed_id' => (int)$row['bed_id'],
+            'bed_name' => (string)$row['bed_name'],
+            'plant_date' => $row['plant_date'],
+            'harvest_start' => $row['harvest_start'],
+            'forecast_kg' => round($forecast, 1),
+            'pred_total_kg' => round($forecast, 1),
+            'harvested_kg' => round($harvested, 1),
+            'remain_kg' => round($remain, 1),
+            'expected_harvest' => $expected,
+            'week_start_date' => $w,
+            'is_overdue' => ($w < $currentWeek || $expected < $today),
+            'pred_days_plant' => $pdPlant,
+            'pred_days_latest' => $pdLatest,
+        ];
+    }
+    mysqli_free_result($res);
+    usort($out, static function ($a, $b) {
+        $c = strcmp($a['expected_harvest'], $b['expected_harvest']);
+        if ($c !== 0) {
+            return $c;
+        }
+        return strcmp($a['bed_name'], $b['bed_name']);
+    });
+    return $out;
+}
+
+/**
+ * 未完了サイクルの残量を「本来の収穫週」（定植時予測）に載せる（過去週も含む）。
+ * 予測超過でも週を当週へ寄せない。mid 再予測で週を未来へずらさない。
+ *
+ * @return array{
+ *   fc_by_week:array<string,float>,
+ *   overdue_weeks:list<string>
+ * }
+ */
+function supply_open_remain_for_inventory(mysqli $link, ?string $today = null): array
+{
+    $today = $today ?: date('Y-m-d');
+    $currentWeek = gcal_week_start_sunday($today);
+    $fcByWeek = [];
+    $overdueWeeks = [];
+    foreach (supply_open_inventory_cycle_rows($link, $today) as $row) {
+        $w = $row['week_start_date'];
+        $fcByWeek[$w] = ($fcByWeek[$w] ?? 0.0) + (float)$row['remain_kg'];
+        if (!empty($row['is_overdue'])) {
+            $overdueWeeks[$w] = true;
+        }
+    }
+    return [
+        'fc_by_week' => $fcByWeek,
+        'overdue_weeks' => array_keys($overdueWeeks),
+    ];
+}
+
+/**
  * 予測「直近週」と同一ロジックの週次累計余剰行
+ *
+ * 過去週の未収穫も含め、早い週から 余剰 += 定植済予測残 − 出荷残。
+ * 過去週の出荷残は0（すでに出荷済み）。ゼロ起算しない。
  *
  * @return list<array{
  *   week_start_date:string,is_elapsed:bool,is_current:bool,
- *   forecast_kg:float,ship_kg:?float,week_delta_kg:float,surplus_kg:float
+ *   forecast_kg:float,ship_kg:?float,week_delta_kg:float,surplus_kg:float,
+ *   overdue_carry_kg:float
  * }>
  */
 function supply_inventory_surplus_rows(mysqli $link, ?string $horizonEnd = null): array
@@ -505,36 +655,8 @@ function supply_inventory_surplus_rows(mysqli $link, ?string $horizonEnd = null)
         $horizonEnd = date('Y-m-d', strtotime('+3 months', strtotime($currentWeek)));
     }
 
-    $sql = "
-SELECT
-  COALESCE(pr.postproc_total_kg, pr.pred_total_kg) AS forecast_kg,
-  DATE_SUB(
-    DATE_ADD(c.plant_date, INTERVAL CAST(ROUND(pr.pred_days) AS SIGNED) DAY),
-    INTERVAL (DAYOFWEEK(DATE_ADD(c.plant_date, INTERVAL CAST(ROUND(pr.pred_days) AS SIGNED) DAY)) - 1) DAY
-  ) AS week_start_date
-FROM cycles c
-JOIN predictions pr
-  ON pr.cycle_id = c.id
- AND NOT EXISTS (
-       SELECT 1 FROM predictions p2
-        WHERE p2.cycle_id = pr.cycle_id
-          AND p2.created_at > pr.created_at
-     )
-WHERE c.harvest_end IS NULL
-  AND pr.pred_days IS NOT NULL
-";
-    $fcByWeek = [];
-    $res = mysqli_query($link, $sql);
-    if ($res) {
-        while ($row = mysqli_fetch_assoc($res)) {
-            $w = $row['week_start_date'];
-            if ($w === null) {
-                continue;
-            }
-            $fcByWeek[$w] = ($fcByWeek[$w] ?? 0.0) + (float)$row['forecast_kg'];
-        }
-        mysqli_free_result($res);
-    }
+    $split = supply_open_remain_for_inventory($link, $today);
+    $fcByWeek = $split['fc_by_week'];
 
     $shipCommitByWeek = [];
     $res = mysqli_query(
@@ -602,13 +724,16 @@ WHERE c.harvest_end IS NULL
 
     $rows = [];
     $surplus = null;
+    $pastFcTotal = 0.0;
     foreach ($weeks as $w) {
         if ($w > $horizonEnd) {
             continue;
         }
+
         $sumKg = (float)($fcByWeek[$w] ?? 0);
         $commit = $shipCommitByWeek[$w] ?? null;
 
+        // 出荷残（ママイキ）: 明日以降のみ。過去週は残0
         if (isset($eventWeeks[$w])) {
             $shipRemain = (float)($remainingByWeek[$w] ?? 0);
         } elseif ($commit !== null) {
@@ -622,15 +747,23 @@ WHERE c.harvest_end IS NULL
             $shipRemain = null;
         }
 
+        // 未収穫が無い過去週は出さない（出荷だけの行で累計を歪めない）
+        if ($w < $currentWeek && $sumKg <= 0.0) {
+            continue;
+        }
         if ($sumKg <= 0.0 && ($shipRemain === null || $shipRemain <= 0.0)) {
             continue;
         }
 
-        $delta = $sumKg - (float)($shipRemain ?? 0);
+        $shipForSurplus = (float)($shipRemain ?? 0);
+        $delta = $sumKg - $shipForSurplus;
         if ($surplus === null) {
             $surplus = $delta;
         } else {
             $surplus = $surplus + $delta;
+        }
+        if ($w < $currentWeek) {
+            $pastFcTotal += $sumKg;
         }
 
         $rows[] = [
@@ -641,6 +774,8 @@ WHERE c.harvest_end IS NULL
             'ship_kg' => $shipRemain === null ? null : round($shipRemain, 1),
             'week_delta_kg' => round($delta, 1),
             'surplus_kg' => round($surplus, 1),
+            // 互換: 過去週の未収穫合計（期首に相当）
+            'overdue_carry_kg' => round($pastFcTotal, 1),
         ];
     }
     return $rows;
@@ -1555,6 +1690,210 @@ function supply_seasonal_baseline(mysqli $link, int $months = 12): array
     return $out;
 }
 
+/** 精度判定に使う最低件数 */
+const GF_PRED_ACC_MIN_N = 15;
+/** 「〇日以内」ヒットの閾値（|予測日数−実績日数|） */
+const GF_PRED_ACC_DAY_WITHIN = 3;
+/** 「●kg以内」ヒットの閾値（|予測kg−実績kg|） */
+const GF_PRED_ACC_KG_WITHIN = 15;
+
+/**
+ * 予測精度（定植時予測 vs 完了実績）。後付け・再予測・cohort・lock は使わない。
+ *
+ * @return array{
+ *   n:int,
+ *   n_days:int,
+ *   mape_pct:?float,
+ *   mae_kg:?float,
+ *   mae_days:?float,
+ *   within_days_pct:?float,
+ *   within_kg_pct:?float,
+ *   day_within:int,
+ *   kg_within:int,
+ *   window_days:int
+ * }
+ */
+function supply_pred_accuracy_metrics(mysqli $link, int $windowDays = 120, int $limit = 40): array
+{
+    require_once __DIR__ . '/plant_calib.php';
+
+    $out = [
+        'n' => 0,
+        'n_days' => 0,
+        'mape_pct' => null,
+        'mae_kg' => null,
+        'mae_days' => null,
+        'within_days_pct' => null,
+        'within_kg_pct' => null,
+        'day_within' => GF_PRED_ACC_DAY_WITHIN,
+        'kg_within' => GF_PRED_ACC_KG_WITHIN,
+        'window_days' => $windowDays,
+        'source' => 'mid_before_harvest_plus_current_calib',
+        'plant' => null,
+        'mid_calib' => null,
+        'plant_calib' => null,
+    ];
+    $windowDays = max(30, min(365, $windowDays));
+    $limit = max(10, min(100, $limit));
+
+    gf_plant_calib_evidence_index($link);
+    $plantCalib = gf_plant_calib_at($link, date('Y-m-d'), '通常');
+    $midCalib = gf_mid_calib_current($link, '通常');
+    $out['plant_calib'] = $plantCalib;
+    $out['mid_calib'] = $midCalib;
+
+    // --- 運用精度: 収穫開始前の mid + いまの mid calib ---
+    $sql = "
+SELECT
+  c.id AS cycle_id,
+  c.plant_date,
+  c.harvest_start,
+  b.group_type,
+  DATEDIFF(c.harvest_start, c.plant_date) AS act_days,
+  (
+    SELECT COALESCE(SUM(h.harvest_kg), 0)
+    FROM harvests h
+    WHERE h.cycle_id = c.id
+      AND (
+        h.loss_type_id IS NULL
+        OR h.loss_type_id NOT IN (
+          SELECT id FROM loss_types WHERE name IN ('GOMI','ゴミ','gomi')
+        )
+      )
+  ) AS actual_kg,
+  (
+    SELECT p.pred_days FROM predictions p
+    WHERE p.cycle_id = c.id
+      AND p.model_id LIKE '%pre_harvest%'
+      AND p.model_id NOT LIKE '%lock%'
+      AND p.model_id NOT LIKE '%cohort%'
+      AND p.model_id NOT LIKE '%calib%'
+      AND p.created_at < TIMESTAMP(c.harvest_start)
+    ORDER BY p.created_at DESC, p.id DESC LIMIT 1
+  ) AS mid_days,
+  (
+    SELECT COALESCE(p.postproc_total_kg, p.pred_total_kg) FROM predictions p
+    WHERE p.cycle_id = c.id
+      AND p.model_id LIKE '%pre_harvest%'
+      AND p.model_id NOT LIKE '%lock%'
+      AND p.model_id NOT LIKE '%cohort%'
+      AND p.model_id NOT LIKE '%calib%'
+      AND p.created_at < TIMESTAMP(c.harvest_start)
+    ORDER BY p.created_at DESC, p.id DESC LIMIT 1
+  ) AS mid_kg
+FROM cycles c
+JOIN beds b ON b.id = c.bed_id
+WHERE c.harvest_end IS NOT NULL
+  AND c.harvest_start IS NOT NULL
+  AND c.plant_date IS NOT NULL
+  AND c.harvest_end >= DATE_SUB(CURDATE(), INTERVAL {$windowDays} DAY)
+ORDER BY c.harvest_end DESC
+LIMIT {$limit}
+";
+    $res = mysqli_query($link, $sql);
+    if (!$res) {
+        return $out;
+    }
+
+    $absErrKg = 0.0;
+    $absPct = 0.0;
+    $nKg = 0;
+    $withinKg = 0;
+    $absErrDays = 0.0;
+    $nDays = 0;
+    $withinDays = 0;
+    $dayTh = GF_PRED_ACC_DAY_WITHIN;
+    $kgTh = GF_PRED_ACC_KG_WITHIN;
+
+    // plant metrics accumulators
+    $pAbsKg = 0.0; $pAbsPct = 0.0; $pNKg = 0; $pWKg = 0;
+    $pAbsDays = 0.0; $pNDays = 0; $pWDays = 0;
+
+    while ($row = mysqli_fetch_assoc($res)) {
+        $cid = (int)$row['cycle_id'];
+        $plant = (string)$row['plant_date'];
+        $actKg = (float)$row['actual_kg'];
+        $actDays = (float)$row['act_days'];
+        $group = (string)$row['group_type'];
+
+        // mid + current calib
+        if ($row['mid_days'] !== null && $row['mid_kg'] !== null && $midCalib) {
+            $pd = max(1.0, (float)$row['mid_days'] + (float)$midCalib['day_offset']);
+            $pk = max(0.0, (float)$row['mid_kg'] * (float)$midCalib['kg_ratio']);
+            if ($actKg >= 5 && $pk > 0) {
+                $err = abs($pk - $actKg);
+                $absErrKg += $err;
+                $absPct += $err / $actKg;
+                $nKg++;
+                if ($err <= $kgTh) {
+                    $withinKg++;
+                }
+            }
+            if ($actDays > 0 && $pd > 0) {
+                $dErr = abs($pd - $actDays);
+                $absErrDays += $dErr;
+                $nDays++;
+                if ($dErr <= $dayTh) {
+                    $withinDays++;
+                }
+            }
+        }
+
+        // plant raw + current plant calib（遠週の参考）
+        $raw = gf_plant_calib_recompute_raw($link, $cid, $plant);
+        if ($raw !== null) {
+            $hit = $plantCalib ?: gf_plant_calib_at($link, date('Y-m-d'), $group);
+            $ppd = (float)$raw['days'];
+            $ppk = (float)$raw['yield'];
+            if ($hit) {
+                $ppd = max(1.0, $ppd + (float)$hit['day_offset']);
+                $ppk = max(0.0, $ppk * (float)$hit['kg_ratio']);
+            }
+            if ($actKg >= 5 && $ppk > 0) {
+                $err = abs($ppk - $actKg);
+                $pAbsKg += $err;
+                $pAbsPct += $err / $actKg;
+                $pNKg++;
+                if ($err <= $kgTh) {
+                    $pWKg++;
+                }
+            }
+            if ($actDays > 0 && $ppd > 0) {
+                $dErr = abs($ppd - $actDays);
+                $pAbsDays += $dErr;
+                $pNDays++;
+                if ($dErr <= $dayTh) {
+                    $pWDays++;
+                }
+            }
+        }
+    }
+    mysqli_free_result($res);
+
+    $out['n'] = $nKg;
+    $out['n_days'] = $nDays;
+    if ($nKg > 0) {
+        $out['mae_kg'] = round($absErrKg / $nKg, 1);
+        $out['mape_pct'] = round(100 * $absPct / $nKg, 1);
+        $out['within_kg_pct'] = round(100 * $withinKg / $nKg, 0);
+    }
+    if ($nDays > 0) {
+        $out['mae_days'] = round($absErrDays / $nDays, 1);
+        $out['within_days_pct'] = round(100 * $withinDays / $nDays, 0);
+    }
+    $plantOut = [
+        'n' => $pNKg,
+        'n_days' => $pNDays,
+        'mape_pct' => $pNKg ? round(100 * $pAbsPct / $pNKg, 1) : null,
+        'mae_kg' => $pNKg ? round($pAbsKg / $pNKg, 1) : null,
+        'mae_days' => $pNDays ? round($pAbsDays / $pNDays, 1) : null,
+        'within_days_pct' => $pNDays ? round(100 * $pWDays / $pNDays, 0) : null,
+        'within_kg_pct' => $pNKg ? round(100 * $pWKg / $pNKg, 0) : null,
+    ];
+    $out['plant'] = $plantOut;
+    return $out;
+}
+
 /**
  * 監視エージェント用スナップショット
  *
@@ -1574,48 +1913,10 @@ function supply_agent_snapshot(mysqli $link): array
     $overgrow = open_cycle_progress($link);
     $riskN = count(array_filter($overgrow, static fn($r) => (int)$r['risk'] === 1));
 
-    // 予測精度: 直近完了サイクルの |pred-actual|/actual
-    $mae = null;
-    $mape = null;
-    $nEval = 0;
-    $res = mysqli_query(
-        $link,
-        "SELECT
-            COALESCE(pr.postproc_total_kg, pr.pred_total_kg) AS pred_kg,
-            (SELECT COALESCE(SUM(h.harvest_kg),0) FROM harvests h
-              WHERE h.cycle_id = c.id
-                AND (h.loss_type_id IS NULL OR h.loss_type_id NOT IN (
-                     SELECT id FROM loss_types WHERE name IN ('GOMI','ゴミ','gomi')
-                ))) AS actual_kg
-         FROM cycles c
-         JOIN predictions pr ON pr.cycle_id = c.id
-          AND NOT EXISTS (
-            SELECT 1 FROM predictions p2 WHERE p2.cycle_id = pr.cycle_id AND p2.created_at > pr.created_at
-          )
-         WHERE c.harvest_end IS NOT NULL
-           AND c.harvest_end >= DATE_SUB(CURDATE(), INTERVAL 120 DAY)
-         ORDER BY c.harvest_end DESC
-         LIMIT 40"
-    );
-    $absErr = 0.0;
-    $absPct = 0.0;
-    if ($res) {
-        while ($row = mysqli_fetch_assoc($res)) {
-            $pred = (float)$row['pred_kg'];
-            $act = (float)$row['actual_kg'];
-            if ($act < 5 || $pred <= 0) {
-                continue;
-            }
-            $absErr += abs($pred - $act);
-            $absPct += abs($pred - $act) / $act;
-            $nEval++;
-        }
-        mysqli_free_result($res);
-    }
-    if ($nEval > 0) {
-        $mae = round($absErr / $nEval, 1);
-        $mape = round(100 * $absPct / $nEval, 1);
-    }
+    $acc = supply_pred_accuracy_metrics($link);
+    $mae = $acc['mae_kg'];
+    $mape = $acc['mape_pct'];
+    $nEval = (int)$acc['n'];
 
     $health = 'ok';
     $notes = [];
@@ -1672,10 +1973,15 @@ function supply_agent_snapshot(mysqli $link): array
             'pred_mae_kg' => $mae,
             'pred_mape_pct' => $mape,
             'pred_eval_n' => $nEval,
+            'pred_mae_days' => $acc['mae_days'],
+            'pred_within_days_pct' => $acc['within_days_pct'],
+            'pred_within_kg_pct' => $acc['within_kg_pct'],
+            'pred_eval_n_days' => $acc['n_days'],
             'first_break_week' => $trust['summary']['first_break_week'],
             'grace_days' => $classified['grace_days'],
             'yoy_miss_weeks' => $sum['yoy_miss_weeks'],
         ],
+        'accuracy' => $acc,
         'trends' => $classified['trends'],
         'spot' => $classified['spot'],
         'actions' => $classified['actions'],
