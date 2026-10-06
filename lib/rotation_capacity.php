@@ -160,6 +160,28 @@ function rotation_effective_plant_date(string $plannedPlantDate, ?string $today 
 }
 
 /**
+ * 緑・能力用の有効定植日（ベッド空きを反映）。
+ * 栽培中ベッドは free_date＋猶予より前に次定植できない（正本 §3.2）。
+ */
+function rotation_green_plant_date(
+    string $plannedPlantDate,
+    ?string $freeDate = null,
+    ?string $today = null
+): string {
+    $plantEff = rotation_effective_plant_date($plannedPlantDate, $today);
+    if ($freeDate) {
+        $earliest = date(
+            'Y-m-d',
+            strtotime(substr($freeDate, 0, 10) . ' +' . GF_REPLANT_GRACE_DAYS . ' days')
+        );
+        if ($plantEff < $earliest) {
+            $plantEff = $earliest;
+        }
+    }
+    return $plantEff;
+}
+
+/**
  * 既に planned/approved の定植を週次kgへ
  *
  * @return array<string,float>
@@ -176,9 +198,9 @@ function rotation_planned_by_week(mysqli $link, float $defaultDays, float $defau
         return $adds;
     }
 
-    $openWeekByBed = [];
+    $openByBed = [];
     foreach (rotation_open_cycles($link) as $oc) {
-        $openWeekByBed[$oc['bed_id']] = $oc['harvest_week'];
+        $openByBed[(int)$oc['bed_id']] = $oc;
     }
 
     $res = mysqli_query(
@@ -195,11 +217,12 @@ function rotation_planned_by_week(mysqli $link, float $defaultDays, float $defau
         $bedId = (int)$row['bed_id'];
         $days = $row['expected_days'] !== null ? (float)$row['expected_days'] : $defaultDays;
         $kg = $row['expected_yield_kg'] !== null ? (float)$row['expected_yield_kg'] : $defaultYield;
-        $plantEff = rotation_effective_plant_date((string)$row['planned_plant_date']);
+        $freeDate = isset($openByBed[$bedId]) ? (string)$openByBed[$bedId]['free_date'] : null;
+        $plantEff = rotation_green_plant_date((string)$row['planned_plant_date'], $freeDate);
         $kg = gf_cohort_scale_yield($link, $plantEff, (string)$row['group_type'], $kg);
         $w = plant_schedule_harvest_week_from_plant($plantEff, $days);
         // 栽培中ベッドの今サイクル収穫週と同週の計画は二重計上しない
-        if (isset($openWeekByBed[$bedId]) && $openWeekByBed[$bedId] === $w) {
+        if (isset($openByBed[$bedId]) && $openByBed[$bedId]['harvest_week'] === $w) {
             continue;
         }
         if (!isset($adds[$w])) {
@@ -305,6 +328,10 @@ function rotation_reserved_free_dates(mysqli $link, float $defaultDays): array
     if (!$has) {
         return $out;
     }
+    $openByBed = [];
+    foreach (rotation_open_cycles($link) as $oc) {
+        $openByBed[(int)$oc['bed_id']] = (string)$oc['free_date'];
+    }
     $res = mysqli_query(
         $link,
         "SELECT bed_id, planned_plant_date, expected_days
@@ -318,7 +345,8 @@ function rotation_reserved_free_dates(mysqli $link, float $defaultDays): array
     while ($row = mysqli_fetch_assoc($res)) {
         $bedId = (int)$row['bed_id'];
         $days = $row['expected_days'] !== null ? (float)$row['expected_days'] : $defaultDays;
-        $plantEff = rotation_effective_plant_date((string)$row['planned_plant_date']);
+        $free = $openByBed[$bedId] ?? null;
+        $plantEff = rotation_green_plant_date((string)$row['planned_plant_date'], $free);
         $harvest = date('Y-m-d', strtotime($plantEff . ' +' . (int)round($days) . ' days'));
         // 複数予約なら最後の収穫日
         if (!isset($out[$bedId]) || $harvest > $out[$bedId]) {
