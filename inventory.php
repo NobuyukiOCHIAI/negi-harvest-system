@@ -326,12 +326,12 @@ $promiseSum = gf_promise_vs_capacity_summary($link, 8);
     <div class="chart-title">直近週 · 定植済予測 / 残出荷 / 累計余剰</div>
     <p class="page-sub mb-2">
       緑=その週の定植済予測（残量） · 橙=出荷残 · 青破線=累計余剰（過去から積み、各週で残出荷を差引）。
-      <strong>在庫割れの目安＝青が橙を下回る週</strong>。需給SIMは差引後在庫の0線で割れを判定（役割が違う）。
+      <strong>在庫割れ＝青が橙を下回る週</strong>。需給SIMも同じ判定（余裕＝余剰−残出荷の0線）。
       <?php if ($overdueCarryKg > 0): ?>
         過去週で <?= number_format($overdueCarryKg, 0) ?>kg（<?= (int)$overdueBedN ?>床）まで積み上げ済み。
       <?php endif; ?>
       <?php if ($nextShort): ?>
-        初回（青＜橙） <?= htmlspecialchars($nextShortLabel, ENT_QUOTES, 'UTF-8') ?>。
+        初回割れ <?= htmlspecialchars($nextShortLabel, ENT_QUOTES, 'UTF-8') ?>。
       <?php endif; ?>
       打ち手の試行は <a href="capacity.php">需給</a>。
     </p>

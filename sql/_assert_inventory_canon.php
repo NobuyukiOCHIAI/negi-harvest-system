@@ -120,26 +120,23 @@ if ($current !== null) {
         $ok[] = sprintf('BREAK: %d weeks match inventory surplus series', $checkedW);
     }
 
-    // 不変6: 需給SIMの初回割れ = 累計＜0（予測の青＜橙とは別）
-    $cumFirst = null;
-    foreach ($fromCurrent as $i => $r) {
-        if (!isset($cum[$i])) {
-            break;
-        }
-        if ((float)$cum[$i] < -1e-6) {
-            $cumFirst = (string)$r['week_start_date'];
+    // 不変6: 初回割れは余剰＜残出荷。予測と需給で一致
+    $invFirst = null;
+    foreach ($fromCurrent as $r) {
+        if (supply_week_is_stockout((float)$r['surplus_kg'], $r['ship_kg'] === null ? null : (float)$r['ship_kg'])) {
+            $invFirst = (string)$r['week_start_date'];
             break;
         }
     }
     $brkFirst = $bs['baseline']['first_break_week'] ?? null;
-    if ($cumFirst !== $brkFirst) {
+    if ($invFirst !== $brkFirst) {
         $fail[] = sprintf(
-            'BREAK: first cum<0 invSeries=%s breakCard=%s',
-            $cumFirst ?? 'null',
+            'BREAK: first stockout inv=%s break=%s (must both be surplus<ship)',
+            $invFirst ?? 'null',
             $brkFirst ?? 'null'
         );
     } else {
-        $ok[] = sprintf('BREAK: SIM first stockout (cum<0) week=%s', $cumFirst ?? 'none');
+        $ok[] = sprintf('BREAK: first stockout week=%s (surplus<ship, both pages)', $invFirst ?? 'none');
     }
 }
 

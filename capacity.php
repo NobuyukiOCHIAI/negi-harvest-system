@@ -356,8 +356,8 @@ $simModeLabel = $simParam === 'level_weak' ? '平準化（弱）'
     <p class="page-sub mb-2">
       <span class="chart-swatch planted"></span>モデル残 ·
       <span class="chart-swatch sales"></span><?= htmlspecialchars((string)$bs['lever_label'], ENT_QUOTES, 'UTF-8') ?> ·
-      残出荷差引後の在庫量のみ · <strong>0線が在庫割れ</strong>。
-      レバーなしの線＝予測の累計余剰と同一系列。本線の見通しは <a href="inventory.php">予測</a>。
+      <strong>線＝余剰−残出荷（余裕）・0線が在庫割れ</strong>。
+      予測の「青＜橙」と同じ週で割れる。本線の見通しは <a href="inventory.php">予測</a>。
     </p>
     <div class="chart-wrap tall"><canvas id="breakSimChart"></canvas></div>
   </div>
@@ -591,8 +591,8 @@ $simModeLabel = $simParam === 'level_weak' ? '平準化（弱）'
       data: {
         labels: <?= json_encode($breakSim['chart']['labels'], JSON_UNESCAPED_UNICODE) ?>,
         datasets: [
-          G.dsPlanted('現状（モデル残）', <?= json_encode($breakSim['chart']['baseline_cum']) ?>),
-          G.dsSales('シナリオ', <?= json_encode($breakSim['chart']['scenario_cum']) ?>),
+          G.dsPlanted('現状（余裕）', <?= json_encode($breakSim['chart']['baseline_buffer'] ?? $breakSim['chart']['baseline_cum']) ?>),
+          G.dsSales('シナリオ（余裕）', <?= json_encode($breakSim['chart']['scenario_buffer'] ?? $breakSim['chart']['scenario_cum']) ?>),
         ],
       },
       options: { ...baseOpt, scales: { y: G.yKg(false) } },

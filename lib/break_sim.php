@@ -235,8 +235,10 @@ function gf_break_sim_cum_from_open(
             'rotation_kg' => 0.0,
             'ship_kg' => round($ship, 1),
             'cum_surplus_kg' => $cum,
-            // 需給SIM: 残出荷差引後の在庫量が0以下＝割れ（予測チャートの青＜橙とは別定義）
-            'broken' => ($cum < -1e-6),
+            // 予測と同じ: 差引後余剰 < その週の残出荷 = 在庫割れ（青＜橙）
+            'broken' => ($cum < $ship - 1e-6),
+            // SIM用: 0線表示は「余剰−残出荷」（マイナス=割れ）
+            'buffer_kg' => round($cum - $ship, 1),
         ];
     }
     return $out;
@@ -305,10 +307,14 @@ function gf_break_sim_combo(mysqli $link, array $opts = [], int $weeksAhead = 16
     $labels = [];
     $baseSeries = [];
     $scSeries = [];
+    $baseBuf = [];
+    $scBuf = [];
     foreach ($baseCum as $i => $row) {
         $labels[] = format_sunday_week($row['week']);
         $baseSeries[] = (float)$row['cum_surplus_kg'];
         $scSeries[] = (float)($scCum[$i]['cum_surplus_kg'] ?? 0);
+        $baseBuf[] = (float)($row['buffer_kg'] ?? ((float)$row['cum_surplus_kg'] - (float)$row['ship_kg']));
+        $scBuf[] = (float)($scCum[$i]['buffer_kg'] ?? ((float)($scCum[$i]['cum_surplus_kg'] ?? 0) - (float)($scCum[$i]['ship_kg'] ?? 0)));
     }
 
     $levers = [];
@@ -352,8 +358,12 @@ function gf_break_sim_combo(mysqli $link, array $opts = [], int $weeksAhead = 16
         'lever_label' => implode(' · ', $levers),
         'chart' => [
             'labels' => $labels,
+            // 余剰そのもの（予測の青破線と同一）
             'baseline_cum' => $baseSeries,
             'scenario_cum' => $scSeries,
+            // 0線割れ用: 余剰−残出荷（マイナス＝予測の青＜橙と同じ週）
+            'baseline_buffer' => $baseBuf,
+            'scenario_buffer' => $scBuf,
         ],
     ];
 }
