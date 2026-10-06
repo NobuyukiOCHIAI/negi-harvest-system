@@ -49,6 +49,9 @@ FROM (
 /**
  * 栽培中残を週次に載せる（実効収量・前倒し収穫日を任意適用）
  *
+ * 週バケツは予測ページと同じ定植時予測日（supply_open_inventory_cycle_rows）。
+ * rotation_open_cycles の「超過→当週寄せ」は能力・空き日用であり、ここでは使わない（正本 I4 / I3）。
+ *
  * @return array{
  *   open_by_week:array<string,float>,
  *   beds:int,
@@ -59,6 +62,8 @@ FROM (
  */
 function gf_open_by_week_scenario(mysqli $link, ?float $effYieldKg = null, int $earlyDays = 0): array
 {
+    require_once __DIR__ . '/supply_ops.php';
+
     $today = date('Y-m-d');
     $earlyDays = max(0, min(60, $earlyDays));
     $openByWeek = [];
@@ -66,7 +71,7 @@ function gf_open_by_week_scenario(mysqli $link, ?float $effYieldKg = null, int $
     $remainTotal = 0.0;
     $shiftedBeds = 0;
 
-    foreach (rotation_open_cycles($link) as $oc) {
+    foreach (supply_open_inventory_cycle_rows($link, $today) as $oc) {
         $beds++;
         $harvested = (float)$oc['harvested_kg'];
         $remain = $effYieldKg !== null && $effYieldKg > 0
@@ -80,6 +85,7 @@ function gf_open_by_week_scenario(mysqli $link, ?float $effYieldKg = null, int $
         $expected = (string)$oc['expected_harvest'];
         if ($earlyDays > 0) {
             $shifted = date('Y-m-d', strtotime($expected . ' -' . $earlyDays . ' days'));
+            // 前倒しSIM: 今日より前にはしない（今日収穫可能とみなす）
             if ($shifted < $today) {
                 $shifted = $today;
             }
@@ -164,6 +170,11 @@ function gf_plant_tomorrow_extra(mysqli $link, int $plantN, ?float $yieldKg = nu
 }
 
 /**
+ * 定植済ベースの累計余剰シリーズ（予測ページと同一土台）
+ *
+ * 過去週の未収穫を openByWeek の過去キーで先に積み、当週以降は残出荷を差し引く。
+ * ゼロ起算しない。回転の「超過→当週寄せ」は使わない（二重計上しない／週ずれしない）。
+ *
  * @param array<string,float> $openByWeek
  * @param float|null $shipSpotKg 当週出荷へのスポット加減（1回のみ）
  * @return list<array>
@@ -174,24 +185,60 @@ function gf_break_sim_cum_from_open(
     int $weeksAhead = 16,
     ?float $shipSpotKg = null
 ): array {
+    require_once __DIR__ . '/supply_ops.php';
+
     $outlook = rotation_capacity_outlook($link, $weeksAhead);
+    if (empty($outlook['weeks'])) {
+        return [];
+    }
+    $currentWeek = (string)$outlook['weeks'][0]['week'];
+    $horizonEnd = (string)$outlook['weeks'][count($outlook['weeks']) - 1]['week'];
+
+    $invRows = supply_inventory_surplus_rows($link, $horizonEnd);
+    $invByWeek = [];
+    foreach ($invRows as $r) {
+        $invByWeek[(string)$r['week_start_date']] = $r;
+    }
+
+    // 過去週の定植済残を先に積む（openByWeek の過去キー。レバーなしなら予測と同じ）
+    $cum = 0.0;
+    $pastKeys = array_keys($openByWeek);
+    sort($pastKeys);
+    foreach ($pastKeys as $w) {
+        if ($w >= $currentWeek) {
+            continue;
+        }
+        $cum += (float)$openByWeek[$w];
+    }
+    $cum = round($cum, 1);
+
     $spot = $shipSpotKg ?? 0.0;
-    $base = [];
+    $out = [];
     foreach ($outlook['weeks'] as $i => $w) {
         $week = (string)$w['week'];
-        $ship = (float)($w['ship_kg'] ?? $w['gcal_kg'] ?? 0);
+        $cap = (float)($openByWeek[$week] ?? 0.0);
+
+        if (isset($invByWeek[$week]) && $invByWeek[$week]['ship_kg'] !== null) {
+            $ship = (float)$invByWeek[$week]['ship_kg'];
+        } else {
+            $ship = (float)($w['gcal_kg'] ?? $w['ship_kg'] ?? 0);
+        }
         if ($i === 0 && $spot !== 0.0) {
             $ship = max(0.0, $ship + $spot);
         }
-        $base[] = [
+
+        $cum = round($cum + $cap - $ship, 1);
+        $out[] = [
             'week' => $week,
-            'capacity_kg' => (float)($openByWeek[$week] ?? 0.0),
-            'open_kg' => (float)($openByWeek[$week] ?? 0.0),
+            'capacity_kg' => round($cap, 1),
+            'open_kg' => round($cap, 1),
             'rotation_kg' => 0.0,
-            'ship_kg' => $ship,
+            'ship_kg' => round($ship, 1),
+            'cum_surplus_kg' => $cum,
+            'broken' => ($cum < -1e-6),
         ];
     }
-    return trust_attach_cumulative($base);
+    return $out;
 }
 
 /** @param array<string,float> $a @param array<string,float> $b */

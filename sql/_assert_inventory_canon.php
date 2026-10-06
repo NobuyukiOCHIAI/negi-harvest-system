@@ -71,6 +71,7 @@ if ($current !== null && $pastFc > 0.05) {
 }
 
 // 不変3: 需給 break_sim のチャート起点 = 予測の当週累計余剰
+// 不変3b: レバーなし baseline は予測の累計余剰と週次一致（回転寄せを混ぜない）
 if ($current !== null) {
     $bs = gf_break_sim_combo($link, []);
     $cum0 = null;
@@ -90,6 +91,33 @@ if ($current !== null) {
         );
     } else {
         $ok[] = sprintf('BREAK: chart[0]=%.1f matches inventory surplus', $cum0);
+    }
+
+    $mismatch = 0;
+    $checkedW = 0;
+    $fromCurrent = array_values(array_filter($rows, static fn($r) => empty($r['is_elapsed'])));
+    foreach ($fromCurrent as $i => $r) {
+        if (!isset($cum[$i])) {
+            break;
+        }
+        $checkedW++;
+        $bc = (float)$cum[$i];
+        $is = (float)$r['surplus_kg'];
+        if (abs($bc - $is) > 1.5) {
+            $mismatch++;
+            if ($mismatch <= 5) {
+                $fail[] = sprintf(
+                    'BREAK: week %s break=%.1f inv=%.1f (delta %+.1f)',
+                    $r['week_start_date'],
+                    $bc,
+                    $is,
+                    $bc - $is
+                );
+            }
+        }
+    }
+    if ($checkedW > 0 && $mismatch === 0) {
+        $ok[] = sprintf('BREAK: %d weeks match inventory surplus series', $checkedW);
     }
 }
 
