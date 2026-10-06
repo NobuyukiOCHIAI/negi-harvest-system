@@ -252,7 +252,8 @@ foreach (array_slice($chartRows, 0, 16) as $ci => $cr) {
 }
 $shortageWeeks = array_values(array_filter(
     $rows,
-    static fn($r) => !$r['is_elapsed'] && $r['surplus_kg'] < 0
+    static fn($r) => !$r['is_elapsed']
+        && supply_week_is_stockout((float)$r['surplus_kg'], $r['ship_kg'] === null ? null : (float)$r['ship_kg'])
 ));
 $negSurplusN = count($shortageWeeks);
 $nextShort = $shortageWeeks[0] ?? null;
@@ -325,11 +326,13 @@ $promiseSum = gf_promise_vs_capacity_summary($link, 8);
   <div class="chart-card">
     <div class="chart-title">直近週 · 定植済予測 / 残出荷 / 累計余剰</div>
     <p class="page-sub mb-2">
-      緑=その週の定植済予測（残量） · 橙=出荷残 · 青破線=累計余剰。
-      <strong>青破線は需給の「定植済累計」と同一系列</strong>（ゼロ起算しない）。
-      庫割れ＝青が0を下回る週（需給カードの初回割れと同じ）。青が橙を下回るだけならタイト。
+      緑=その週の定植済予測（残量） · 橙=出荷残 · 青破線=累計余剰（過去から積み、各週で残出荷を差引）。
+      <strong>在庫割れ＝青が橙を下回る週</strong>（需給の初回割れと同じ）。累計がプラスでも、残出荷より少なければ割れ。
       <?php if ($overdueCarryKg > 0): ?>
-        過去週で <?= number_format($overdueCarryKg, 0) ?>kg（<?= (int)$overdueBedN ?>床）まで積み、当週の青は出荷差引後の累計から表示。
+        過去週で <?= number_format($overdueCarryKg, 0) ?>kg（<?= (int)$overdueBedN ?>床）まで積み上げ済み。
+      <?php endif; ?>
+      <?php if ($nextShort): ?>
+        初回割れ <?= htmlspecialchars($nextShortLabel, ENT_QUOTES, 'UTF-8') ?>（余剰 <?= number_format((float)$nextShortSurplus, 0) ?>kg ＜ 残出荷）。
       <?php endif; ?>
       打ち手の試行は <a href="capacity.php">需給</a>。
     </p>
@@ -360,7 +363,7 @@ $promiseSum = gf_promise_vs_capacity_summary($link, 8);
               <span class="badge-this-week">当週</span>
             <?php endif; ?>
           </div>
-          <span class="badge-status <?= $r['surplus_kg'] < 0 ? 'late' : 'growing' ?>">
+          <span class="badge-status <?= supply_week_is_stockout((float)$r['surplus_kg'], $r['ship_kg'] === null ? null : (float)$r['ship_kg']) ? 'late' : 'growing' ?>">
             余剰 <?= h_num($r['surplus_kg'], 0) ?>
           </span>
         </div>
@@ -428,7 +431,7 @@ $promiseSum = gf_promise_vs_capacity_summary($link, 8);
           <td class="text-end"><?= $r['avg_kg'] === null ? '—' : number_format($r['avg_kg'], 1) ?></td>
           <td class="text-end fw-semibold"><?= number_format($r['forecast_kg'], 1) ?></td>
           <td class="text-end"><?= $r['ship_kg'] === null ? '—' : number_format($r['ship_kg'], 1) ?></td>
-          <td class="text-end <?= $r['surplus_kg'] < 0 ? 'surplus-neg' : 'surplus-pos' ?>"><?= h_num($r['surplus_kg'], 1) ?></td>
+          <td class="text-end <?= supply_week_is_stockout((float)$r['surplus_kg'], $r['ship_kg'] === null ? null : (float)$r['ship_kg']) ? 'surplus-neg' : 'surplus-pos' ?>"><?= h_num($r['surplus_kg'], 1) ?></td>
         </tr>
         <tr class="collapse" id="<?= $sid ?>">
           <td colspan="7" class="p-2 bg-light">

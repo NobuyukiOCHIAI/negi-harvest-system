@@ -356,8 +356,8 @@ $simModeLabel = $simParam === 'level_weak' ? '平準化（弱）'
     <p class="page-sub mb-2">
       <span class="chart-swatch planted"></span>モデル残 ·
       <span class="chart-swatch sales"></span><?= htmlspecialchars((string)$bs['lever_label'], ENT_QUOTES, 'UTF-8') ?> ·
-      0線が割れ。
-      <strong>レバーなしの線＝予測の青破線（累計余剰）と同一系列</strong>。
+      <span class="chart-swatch gcal"></span>残出荷。
+      <strong>在庫割れ＝定植済累計が残出荷を下回る</strong>（予測の青＜橙と同じ）。レバーなしの累計＝予測の青破線と同一系列。
       本線の見通しは <a href="inventory.php">予測</a>。
     </p>
     <div class="chart-wrap tall"><canvas id="breakSimChart"></canvas></div>
@@ -594,9 +594,10 @@ $simModeLabel = $simParam === 'level_weak' ? '平準化（弱）'
         datasets: [
           G.dsPlanted('現状（モデル残）', <?= json_encode($breakSim['chart']['baseline_cum']) ?>),
           G.dsSales('シナリオ', <?= json_encode($breakSim['chart']['scenario_cum']) ?>),
+          G.dsGcal('残出荷', <?= json_encode($breakSim['chart']['ship_remain'] ?? []) ?>),
         ],
       },
-      options: { ...baseOpt, scales: { y: G.yKg(false) } },
+      options: { ...baseOpt, scales: { y: G.yKg(true) } },
       plugins: [G.zeroPlugin],
     });
   }

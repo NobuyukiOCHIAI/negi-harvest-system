@@ -235,7 +235,8 @@ function gf_break_sim_cum_from_open(
             'rotation_kg' => 0.0,
             'ship_kg' => round($ship, 1),
             'cum_surplus_kg' => $cum,
-            'broken' => ($cum < -1e-6),
+            // 正本: 累計余剰（出荷差引後）が出荷残を下回る＝在庫割れ（青＜橙）
+            'broken' => ($cum < $ship - 1e-6),
         ];
     }
     return $out;
@@ -304,10 +305,12 @@ function gf_break_sim_combo(mysqli $link, array $opts = [], int $weeksAhead = 16
     $labels = [];
     $baseSeries = [];
     $scSeries = [];
+    $shipSeries = [];
     foreach ($baseCum as $i => $row) {
         $labels[] = format_sunday_week($row['week']);
         $baseSeries[] = (float)$row['cum_surplus_kg'];
         $scSeries[] = (float)($scCum[$i]['cum_surplus_kg'] ?? 0);
+        $shipSeries[] = (float)($row['ship_kg'] ?? 0);
     }
 
     $levers = [];
@@ -353,6 +356,7 @@ function gf_break_sim_combo(mysqli $link, array $opts = [], int $weeksAhead = 16
             'labels' => $labels,
             'baseline_cum' => $baseSeries,
             'scenario_cum' => $scSeries,
+            'ship_remain' => $shipSeries,
         ],
     ];
 }

@@ -119,6 +119,25 @@ if ($current !== null) {
     if ($checkedW > 0 && $mismatch === 0) {
         $ok[] = sprintf('BREAK: %d weeks match inventory surplus series', $checkedW);
     }
+
+    // 不変6: 初回割れ = 余剰＜残出荷。予測と需給で一致
+    $invFirst = null;
+    foreach ($fromCurrent as $r) {
+        if (supply_week_is_stockout((float)$r['surplus_kg'], $r['ship_kg'] === null ? null : (float)$r['ship_kg'])) {
+            $invFirst = (string)$r['week_start_date'];
+            break;
+        }
+    }
+    $brkFirst = $bs['baseline']['first_break_week'] ?? null;
+    if ($invFirst !== $brkFirst) {
+        $fail[] = sprintf(
+            'BREAK: first stockout inv=%s break=%s (need surplus<ship)',
+            $invFirst ?? 'null',
+            $brkFirst ?? 'null'
+        );
+    } else {
+        $ok[] = sprintf('BREAK: first stockout week=%s (surplus<ship)', $invFirst ?? 'none');
+    }
 }
 
 // 不変5: 今日の収穫候補の残は、定植時週の余剰に載る（mid日数で未来へ逃がさない）

@@ -636,6 +636,16 @@ function supply_open_remain_for_inventory(mysqli $link, ?string $today = null): 
 }
 
 /**
+ * 在庫割れ判定（正本）: 累計余剰（出荷差引後） < その週の残出荷
+ * 予測チャートの「青破線が出荷残（橙）を下回る」と同じ。
+ */
+function supply_week_is_stockout(float $surplusKg, ?float $shipRemainKg): bool
+{
+    $ship = $shipRemainKg === null ? 0.0 : (float)$shipRemainKg;
+    return $surplusKg < $ship - 1e-6;
+}
+
+/**
  * 予測「直近週」と同一ロジックの週次累計余剰行
  *
  * 過去週の未収穫も含め、早い週から 余剰 += 定植済予測残 − 出荷残。
