@@ -225,7 +225,7 @@ $simModeLabel = $simParam === 'level_weak' ? '平準化（弱）'
   <div class="gf-header">
     <div>
       <h1 class="page-title">需給シミュレーション</h1>
-      <p class="page-sub">実効前提で打ち手を試し、在庫割れを防ぐ／先延ばしする · 本線の見通しは <a href="inventory.php">予測</a></p>
+      <p class="page-sub">②実効予測の前提で打ち手を試し、在庫割れを防ぐ／先延ばしする · 計画監査は <a href="inventory.php">予測</a></p>
     </div>
   </div>
 
@@ -292,7 +292,7 @@ $simModeLabel = $simParam === 'level_weak' ? '平準化（弱）'
     <form class="sim-form" method="get" action="capacity.php">
       <input type="hidden" name="sim" value="<?= htmlspecialchars($simParam, ENT_QUOTES, 'UTF-8') ?>">
       <div>
-        <label for="eff">① 実効収量 kg/床</label>
+        <label for="eff">① 感度収量 kg/床（③レバー・②ではない）</label>
         <input id="eff" type="number" name="eff" min="40" max="400" step="1"
                value="<?= $useEff ? $effNow : $sug ?>" placeholder="<?= $sug ?>">
       </div>

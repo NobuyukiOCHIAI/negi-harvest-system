@@ -70,9 +70,16 @@ if ($current !== null && $pastFc > 0.05) {
     }
 }
 
-// 不変3: 需給 break_sim のチャート起点 = 予測の当週累計余剰
-// 不変3b: レバーなし baseline は予測の累計余剰と週次一致（回転寄せを混ぜない）
-if ($current !== null) {
+// 不変3/3b: レバーなし break_sim = ②実効系列（計画ビュー①と一致しなくてよい）
+$effRows = supply_effective_surplus_rows($link);
+$effCurrent = null;
+foreach ($effRows as $r) {
+    if (!empty($r['is_current'])) {
+        $effCurrent = $r;
+        break;
+    }
+}
+if ($effCurrent !== null) {
     $bs = gf_break_sim_combo($link, []);
     $cum0 = null;
     $labels = $bs['chart']['labels'] ?? [];
@@ -80,23 +87,23 @@ if ($current !== null) {
     if ($labels && $cum) {
         $cum0 = (float)$cum[0];
     }
-    $want = (float)$current['surplus_kg'];
+    $want = (float)$effCurrent['surplus_kg'];
     if ($cum0 === null) {
         $fail[] = 'BREAK: chart baseline_cum missing';
     } elseif (abs($cum0 - $want) > 1.0) {
         $fail[] = sprintf(
-            'BREAK: chart[0]=%.1f != inventory current surplus=%.1f (different base)',
+            'BREAK: chart[0]=%.1f != effective current surplus=%.1f (different base)',
             $cum0,
             $want
         );
     } else {
-        $ok[] = sprintf('BREAK: chart[0]=%.1f matches inventory surplus', $cum0);
+        $ok[] = sprintf('BREAK: chart[0]=%.1f matches effective surplus', $cum0);
     }
 
     $mismatch = 0;
     $checkedW = 0;
-    $fromCurrent = array_values(array_filter($rows, static fn($r) => empty($r['is_elapsed'])));
-    foreach ($fromCurrent as $i => $r) {
+    $fromCurrentEff = array_values(array_filter($effRows, static fn($r) => empty($r['is_elapsed'])));
+    foreach ($fromCurrentEff as $i => $r) {
         if (!isset($cum[$i])) {
             break;
         }
@@ -107,7 +114,7 @@ if ($current !== null) {
             $mismatch++;
             if ($mismatch <= 5) {
                 $fail[] = sprintf(
-                    'BREAK: week %s break=%.1f inv=%.1f (delta %+.1f)',
+                    'BREAK: week %s break=%.1f eff=%.1f (delta %+.1f)',
                     $r['week_start_date'],
                     $bc,
                     $is,
@@ -117,26 +124,26 @@ if ($current !== null) {
         }
     }
     if ($checkedW > 0 && $mismatch === 0) {
-        $ok[] = sprintf('BREAK: %d weeks match inventory surplus series', $checkedW);
+        $ok[] = sprintf('BREAK: %d weeks match effective surplus series', $checkedW);
     }
 
-    // 不変6: 初回割れは余剰＜残出荷。予測と需給で一致
-    $invFirst = null;
-    foreach ($fromCurrent as $r) {
+    // 不変6: 初回割れは余剰＜残出荷。需給 = 実効系列
+    $effFirst = null;
+    foreach ($fromCurrentEff as $r) {
         if (supply_week_is_stockout((float)$r['surplus_kg'], $r['ship_kg'] === null ? null : (float)$r['ship_kg'])) {
-            $invFirst = (string)$r['week_start_date'];
+            $effFirst = (string)$r['week_start_date'];
             break;
         }
     }
     $brkFirst = $bs['baseline']['first_break_week'] ?? null;
-    if ($invFirst !== $brkFirst) {
+    if ($effFirst !== $brkFirst) {
         $fail[] = sprintf(
-            'BREAK: first stockout inv=%s break=%s (must both be surplus<ship)',
-            $invFirst ?? 'null',
+            'BREAK: first stockout eff=%s break=%s (must both be surplus<ship on effective)',
+            $effFirst ?? 'null',
             $brkFirst ?? 'null'
         );
     } else {
-        $ok[] = sprintf('BREAK: first stockout week=%s (surplus<ship, both pages)', $invFirst ?? 'none');
+        $ok[] = sprintf('BREAK: first stockout week=%s (effective, surplus<ship)', $effFirst ?? 'none');
     }
 }
 

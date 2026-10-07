@@ -1,7 +1,7 @@
 <?php
 /**
- * 在庫割れ回避シミュレーション — 実効収量・出荷スポット・定植前倒し・前倒し収穫（DB非破壊）
- * 正本 §0.10
+ * 在庫割れ回避シミュレーション — ②実効予測土台＋③感度収量・出荷スポット・定植前倒し・前倒し収穫（DB非破壊）
+ * 正本 §0.10 / §6
  */
 require_once __DIR__ . '/rotation_capacity.php';
 require_once __DIR__ . '/inventory_trust.php';
@@ -47,10 +47,10 @@ FROM (
 }
 
 /**
- * 栽培中残を週次に載せる（実効収量・前倒し収穫日を任意適用）
+ * 栽培中残を週次に載せる（③感度収量・前倒し収穫日を任意適用）
  *
- * 週バケツは予測ページと同じ定植時予測日（supply_open_inventory_cycle_rows）。
- * rotation_open_cycles の「超過→当週寄せ」は能力・空き日用であり、ここでは使わない（正本 I4 / I3）。
+ * 週バケツは②実効予測（supply_open_effective_cycle_rows）。
+ * 意図在庫は当週利用可能。rotation_open_cycles の超過寄せは使わない（正本 I4 / I3b）。
  *
  * @return array{
  *   open_by_week:array<string,float>,
@@ -65,13 +65,14 @@ function gf_open_by_week_scenario(mysqli $link, ?float $effYieldKg = null, int $
     require_once __DIR__ . '/supply_ops.php';
 
     $today = date('Y-m-d');
+    $currentWeek = gcal_week_start_sunday($today);
     $earlyDays = max(0, min(60, $earlyDays));
     $openByWeek = [];
     $beds = 0;
     $remainTotal = 0.0;
     $shiftedBeds = 0;
 
-    foreach (supply_open_inventory_cycle_rows($link, $today) as $oc) {
+    foreach (supply_open_effective_cycle_rows($link, $today) as $oc) {
         $beds++;
         $harvested = (float)$oc['harvested_kg'];
         $remain = $effYieldKg !== null && $effYieldKg > 0
@@ -83,7 +84,7 @@ function gf_open_by_week_scenario(mysqli $link, ?float $effYieldKg = null, int $
         }
 
         $expected = (string)$oc['expected_harvest'];
-        if ($earlyDays > 0) {
+        if ($earlyDays > 0 && empty($oc['is_intentional_hold'])) {
             $shifted = date('Y-m-d', strtotime($expected . ' -' . $earlyDays . ' days'));
             // 前倒しSIM: 今日より前にはしない（今日収穫可能とみなす）
             if ($shifted < $today) {
@@ -94,7 +95,12 @@ function gf_open_by_week_scenario(mysqli $link, ?float $effYieldKg = null, int $
             }
             $expected = $shifted;
         }
-        $week = gcal_week_start_sunday($expected);
+        $week = !empty($oc['is_intentional_hold'])
+            ? $currentWeek
+            : gcal_week_start_sunday($expected);
+        if ($week < $currentWeek) {
+            $week = $currentWeek;
+        }
         if (!isset($openByWeek[$week])) {
             $openByWeek[$week] = 0.0;
         }
@@ -170,10 +176,10 @@ function gf_plant_tomorrow_extra(mysqli $link, int $plantN, ?float $yieldKg = nu
 }
 
 /**
- * 定植済ベースの累計余剰シリーズ（予測ページと同一土台）
+ * 定植済ベースの累計余剰シリーズ（②実効系列と同一土台）
  *
  * 過去週の未収穫を openByWeek の過去キーで先に積み、当週以降は残出荷を差し引く。
- * ゼロ起算しない。回転の「超過→当週寄せ」は使わない（二重計上しない／週ずれしない）。
+ * ゼロ起算しない。回転の「超過→当週寄せ」は使わない。
  *
  * @param array<string,float> $openByWeek
  * @param float|null $shipSpotKg 当週出荷へのスポット加減（1回のみ）
@@ -194,7 +200,8 @@ function gf_break_sim_cum_from_open(
     $currentWeek = (string)$outlook['weeks'][0]['week'];
     $horizonEnd = (string)$outlook['weeks'][count($outlook['weeks']) - 1]['week'];
 
-    $invRows = supply_inventory_surplus_rows($link, $horizonEnd);
+    // 出荷残は実効系列と同じ算出（計画ビュー①とは週バケツが異なりうる）
+    $invRows = supply_effective_surplus_rows($link, $horizonEnd);
     $invByWeek = [];
     foreach ($invRows as $r) {
         $invByWeek[(string)$r['week_start_date']] = $r;
@@ -319,7 +326,7 @@ function gf_break_sim_combo(mysqli $link, array $opts = [], int $weeksAhead = 16
 
     $levers = [];
     if ($useEff) {
-        $levers[] = '実効' . (int)$effKg . 'kg/床';
+        $levers[] = '感度' . (int)$effKg . 'kg/床';
     }
     if ($shipSpot !== null) {
         $sign = $shipDelta > 0 ? '+' : '';
@@ -358,17 +365,17 @@ function gf_break_sim_combo(mysqli $link, array $opts = [], int $weeksAhead = 16
         'lever_label' => implode(' · ', $levers),
         'chart' => [
             'labels' => $labels,
-            // 余剰そのもの（予測の青破線と同一）
+            // 余剰そのもの（②実効系列と同一）
             'baseline_cum' => $baseSeries,
             'scenario_cum' => $scSeries,
-            // 0線割れ用: 余剰−残出荷（マイナス＝予測の青＜橙と同じ週）
+            // 0線割れ用: 余剰−残出荷（マイナス＝割れ）
             'baseline_buffer' => $baseBuf,
             'scenario_buffer' => $scBuf,
         ],
     ];
 }
 
-/** 互換: 実効収量のみ */
+/** 互換: ③感度収量のみ */
 function gf_break_sim_eff_yield(mysqli $link, ?float $effYieldKg = null, int $weeksAhead = 16): array
 {
     return gf_break_sim_combo($link, ['eff' => $effYieldKg], $weeksAhead);
