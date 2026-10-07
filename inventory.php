@@ -39,7 +39,10 @@ function inv_cycle_list_html(array $details): string
         $href = 'bed_cycles.php?bed_id=' . (int)$d['bed_id'];
         $html .= '<tr>';
         $html .= '<td><a href="' . $href . '">' . htmlspecialchars((string)$d['bed_name'], ENT_QUOTES, 'UTF-8') . '</a>';
-        if (!empty($d['is_intentional_hold'])) {
+        $dk = (string)($d['delay_kind'] ?? '');
+        if ($dk === 'bio') {
+            $html .= ' <span class="badge-status late">生物遅れ</span>';
+        } elseif (!empty($d['is_intentional_hold']) || $dk === 'hold' || $dk === 'mix') {
             $html .= ' <span class="badge-status late">意図在庫</span>';
         } elseif (!empty($d['is_overdue'])) {
             $html .= ' <span class="badge-status late">遅延</span>';

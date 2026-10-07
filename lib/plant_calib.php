@@ -141,7 +141,7 @@ function gf_plant_calib_evidence_index(mysqli $link): array
     if (!is_dir($dir)) {
         @mkdir($dir, 0775, true);
     }
-    $path = $dir . '/plant_calib_evidence_w14_hold.json';
+    $path = $dir . '/plant_calib_evidence_w14_hold_v2.json';
     if (is_readable($path) && (time() - (int)filemtime($path)) < 6 * 3600) {
         $decoded = json_decode((string)file_get_contents($path), true);
         if (is_array($decoded) && isset($decoded['rows']) && is_array($decoded['rows'])) {
@@ -170,7 +170,17 @@ SELECT
           SELECT id FROM loss_types WHERE name IN ('GOMI','ゴミ','gomi')
         )
       )
-  ) AS actual_kg
+  ) AS actual_kg,
+  (
+    SELECT p.pred_days FROM predictions p
+    WHERE p.cycle_id = c.id
+      AND p.model_id LIKE '%pre_harvest%'
+      AND p.model_id NOT LIKE '%lock%'
+      AND p.model_id NOT LIKE '%cohort%'
+      AND p.model_id NOT LIKE '%calib%'
+      AND p.created_at < TIMESTAMP(c.harvest_start)
+    ORDER BY p.created_at DESC, p.id DESC LIMIT 1
+  ) AS mid_days
 FROM cycles c
 JOIN beds b ON b.id = c.bed_id
 WHERE c.harvest_end IS NOT NULL
@@ -202,17 +212,20 @@ ORDER BY c.harvest_end ASC
         if ($predDays <= 0 || $predKg <= 0) {
             continue;
         }
-        // 意図在庫: 日数証拠から除外（kgは残す）
-        $plantExp = date('Y-m-d', strtotime($plant . ' +' . (int)round($predDays) . ' day'));
-        $hold = supply_is_intentional_hold($plantExp, $hs, (string)$row['harvest_end']);
+        $midDays = $row['mid_days'] !== null && $row['mid_days'] !== ''
+            ? (float)$row['mid_days'] : null;
+        $delay = supply_delay_kind($predDays, $midDays, (float)$actDays);
+        $excludeDay = !empty($delay['exclude_day_learning']);
         $entry = [
             'plant_date' => $plant,
             'harvest_end' => (string)$row['harvest_end'],
             'group' => (string)$row['group_type'],
             'kg_ratio' => $actKg / $predKg,
-            'intentional_hold' => $hold,
+            'intentional_hold' => !empty($delay['is_intentional_hold']),
+            'delay_kind' => (string)$delay['kind'],
         ];
-        if (!$hold) {
+        // bio / on_time / early は日数証拠に入れる。hold/mix/unclear は除外
+        if (!$excludeDay) {
             $entry['day_err'] = $actDays - $predDays; // 実績 − 予測
         }
         $cache[] = $entry;
@@ -416,13 +429,9 @@ WHERE c.harvest_end IS NOT NULL
         if ($groupType !== '' && (string)$row['group_type'] === $groupType) {
             $kgSame[] = $kr;
         }
-        // 意図在庫は日数証拠に混ぜない
         $pdPlant = $row['plant_days'] !== null ? (float)$row['plant_days'] : $midDays;
-        $plantExp = date(
-            'Y-m-d',
-            strtotime((string)$row['plant_date'] . ' +' . (int)round($pdPlant) . ' day')
-        );
-        if (supply_is_intentional_hold($plantExp, (string)$row['harvest_start'], (string)$row['harvest_end'])) {
+        $delay = supply_delay_kind($pdPlant, $midDays, $actDays);
+        if (!empty($delay['exclude_day_learning'])) {
             continue;
         }
         $de = $actDays - $midDays;

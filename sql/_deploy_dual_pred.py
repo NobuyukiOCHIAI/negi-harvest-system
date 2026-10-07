@@ -14,7 +14,7 @@ FILES = [
     "inventory.php",
     "capacity.php",
     "agent.php",
-]
+]  # delay_kind v2 も含む
 
 
 def read_env(name: str) -> dict[str, str]:
