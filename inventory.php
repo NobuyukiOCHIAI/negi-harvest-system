@@ -40,10 +40,14 @@ function inv_cycle_list_html(array $details): string
         $html .= '<tr>';
         $html .= '<td><a href="' . $href . '">' . htmlspecialchars((string)$d['bed_name'], ENT_QUOTES, 'UTF-8') . '</a>';
         $dk = (string)($d['delay_kind'] ?? '');
-        if ($dk === 'bio') {
-            $html .= ' <span class="badge-status late">生物遅れ</span>';
-        } elseif (!empty($d['is_intentional_hold']) || $dk === 'hold' || $dk === 'mix') {
+        if ($dk === 'hold' || !empty($d['is_intentional_hold'])) {
             $html .= ' <span class="badge-status late">意図在庫</span>';
+        } elseif ($dk === 'extend') {
+            $html .= ' <span class="badge-status late">栽培延長</span>';
+        } elseif ($dk === 'early') {
+            $html .= ' <span class="badge-status late">前倒し</span>';
+        } elseif ($dk === 'bio') {
+            $html .= ' <span class="badge-status late">生物遅れ</span>';
         } elseif (!empty($d['is_overdue'])) {
             $html .= ' <span class="badge-status late">遅延</span>';
         }
@@ -61,9 +65,9 @@ $today = date('Y-m-d');
 $currentWeek = gcal_week_start_sunday($today);
 $horizonEnd = date('Y-m-d', strtotime('+3 months', strtotime($currentWeek)));
 
-// 週バケツ=定植時予測日（今日の収穫候補と同じ）。kg=最新有効予測の残。
+// 週バケツ=②実効（予測本線）。意図在庫・予定超過の残は当週利用可能。
 $detailsByWeek = [];
-foreach (supply_open_inventory_cycle_rows($link, $today) as $row) {
+foreach (supply_open_effective_cycle_rows($link, $today) as $row) {
     $w = $row['week_start_date'];
     if (!isset($detailsByWeek[$w])) {
         $detailsByWeek[$w] = [];

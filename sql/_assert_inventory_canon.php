@@ -18,7 +18,7 @@ $ok = [];
 $today = date('Y-m-d');
 $currentWeek = gcal_week_start_sunday($today);
 
-$split = supply_open_remain_for_inventory($link, $today);
+$split = supply_open_remain_for_effective($link, $today);
 $fcByWeek = $split['fc_by_week'] ?? [];
 $pastFc = 0.0;
 $pastWeeksWithFc = [];
@@ -147,42 +147,42 @@ if ($effCurrent !== null) {
     }
 }
 
-// 不変5: 今日の収穫候補の残は、定植時週の余剰に載る（mid日数で未来へ逃がさない）
-$invCycles = supply_open_inventory_cycle_rows($link, $today);
-$byCycle = [];
-foreach ($invCycles as $r) {
-    $byCycle[(int)$r['cycle_id']] = $r;
+// 不変5: 意図在庫の残を未来週へ逃がさない（当週）
+$effCycles = supply_open_effective_cycle_rows($link, $today);
+$leaked = 0;
+$holdN = 0;
+foreach ($effCycles as $r) {
+    if (empty($r['is_intentional_hold']) && ($r['delay_kind'] ?? '') !== 'hold') {
+        continue;
+    }
+    $holdN++;
+    if ($r['week_start_date'] > $currentWeek) {
+        $leaked++;
+        $fail[] = sprintf('WEEK: hold %s parked in future week %s', $r['bed_name'], $r['week_start_date']);
+    }
 }
-$missing = 0;
-$checked = 0;
-foreach (open_cycle_progress($link) as $op) {
-    $due = !empty($op['harvest_start'])
-        || (!empty($op['expected_harvest']) && $op['expected_harvest'] <= $today);
-    if (!$due) {
-        continue;
+if ($leaked === 0) {
+    $ok[] = sprintf('WEEK: intentional holds stay on current week (n=%d)', $holdN);
+}
+// 予測本線の累計と実効系列が一致
+$invRows = supply_inventory_surplus_rows($link);
+$invCur = null;
+foreach ($invRows as $r) {
+    if (!empty($r['is_current'])) {
+        $invCur = $r;
+        break;
     }
-    $cid = (int)$op['cycle_id'];
-    $inv = $byCycle[$cid] ?? null;
-    if ($inv === null) {
-        // remain 0 なら候補に出ても余剰0は許容
-        continue;
-    }
-    $checked++;
-    $plantExp = (string)($op['expected_harvest'] ?? '');
-    $plantWk = $plantExp !== '' ? gcal_week_start_sunday($plantExp) : '';
-    if ($plantWk !== '' && $inv['week_start_date'] !== $plantWk) {
-        $missing++;
+}
+if ($invCur !== null && $effCurrent !== null) {
+    if (abs((float)$invCur['surplus_kg'] - (float)$effCurrent['surplus_kg']) > 1.0) {
         $fail[] = sprintf(
-            'WEEK: %s cycle=%d todayWk=%s invWk=%s (mid drift)',
-            $op['bed_name'],
-            $cid,
-            $plantWk,
-            $inv['week_start_date']
+            'INV: forecast surplus=%.1f != effective=%.1f',
+            (float)$invCur['surplus_kg'],
+            (float)$effCurrent['surplus_kg']
         );
+    } else {
+        $ok[] = 'INV: forecast main line matches effective surplus';
     }
-}
-if ($checked > 0 && $missing === 0) {
-    $ok[] = sprintf('WEEK: %d harvest-due beds match plant weeks', $checked);
 }
 
 echo "=== inventory canon assert ===\n";

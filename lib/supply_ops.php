@@ -51,11 +51,12 @@ const GF_BIO_EXT2_ABS_MAX = 5.0;
 const GF_ENSURE_TTL_SEC = 300;
 
 /**
- * 遅れの三点分類（正本 §6 v2）
+ * 運用分類 v3（正本 §6）
  *
- * @param float|null $plantDays ①定植時 pred_days
- * @param float|null $effDays   ②実効（mid／最新）pred_days。無ければ null
- * @param float      $refDays   実績日数（harvest_start−plant）またはオープンの経過日数（today−plant）
+ * @param float|null $plantDays ①
+ * @param float|null $effDays   ②（無ければ①と同じ扱い）
+ * @param float      $refDays   実績または経過日数
+ * @param bool       $stockoutRisk 在庫割れリスクがあるか（オープンは現時点、完了は呼び出し側）
  * @return array{
  *   kind:string,
  *   is_intentional_hold:bool,
@@ -65,9 +66,10 @@ const GF_ENSURE_TTL_SEC = 300;
  *   ext2:?float
  * }
  *
- * kind: early|on_time|hold|bio|mix|unclear|unknown
+ * kind: early|on_time|bio|hold|extend|unknown
+ * early=前倒し収穫（学習除外） hold=意図在庫（学習除外） extend=栽培延長（学習に入れる）
  */
-function supply_delay_kind(?float $plantDays, ?float $effDays, float $refDays): array
+function supply_delay_kind(?float $plantDays, ?float $effDays, float $refDays, bool $stockoutRisk = false): array
 {
     $out = [
         'kind' => 'unknown',
@@ -77,59 +79,33 @@ function supply_delay_kind(?float $plantDays, ?float $effDays, float $refDays): 
         'ext1' => null,
         'ext2' => null,
     ];
-    if ($plantDays === null || $plantDays <= 0.0 || $refDays <= 0.0) {
+    $base = $plantDays !== null && $plantDays > 0 ? $plantDays : $effDays;
+    if ($base === null || $base <= 0.0 || $refDays <= 0.0) {
         return $out;
     }
-    $ext1 = $refDays - $plantDays;
-    $out['ext1'] = $ext1;
-    $midStretch = null;
-    $ext2 = null;
-    if ($effDays !== null && $effDays > 0.0) {
-        $midStretch = $effDays - $plantDays;
-        $ext2 = $refDays - $effDays;
-        $out['mid_stretch'] = $midStretch;
-        $out['ext2'] = $ext2;
-    }
+    $readyDays = ($effDays !== null && $effDays > 0) ? $effDays : $base;
+    $out['ext1'] = $refDays - $base;
+    $out['ext2'] = $refDays - $readyDays;
+    $out['mid_stretch'] = ($effDays !== null && $plantDays !== null) ? ($effDays - $plantDays) : null;
 
-    if ($ext1 <= GF_DELAY_EARLY_LT) {
+    // 予定より明らかに早い＝割れ回避の前倒し。日数学習に入れない
+    if ($refDays <= $readyDays + (float)GF_DELAY_EARLY_LT) {
         $out['kind'] = 'early';
-        return $out;
-    }
-    if ($ext1 <= (float)GF_INTENTIONAL_HOLD_GRACE_DAYS) {
-        $out['kind'] = 'on_time';
-        return $out;
-    }
-
-    // 猶予超過
-    if (
-        $midStretch !== null
-        && $midStretch >= GF_BIO_MID_STRETCH_MIN
-        && abs((float)$ext2) <= GF_BIO_EXT2_ABS_MAX
-    ) {
-        $out['kind'] = 'bio';
-        return $out;
-    }
-    if (
-        $midStretch !== null
-        && $midStretch >= GF_BIO_MID_STRETCH_MIN
-        && (float)$ext2 > GF_BIO_EXT2_ABS_MAX
-    ) {
-        $out['kind'] = 'mix';
-        $out['is_intentional_hold'] = true;
         $out['exclude_day_learning'] = true;
         return $out;
     }
-    if ($ext1 >= (float)GF_HOLD_EXT1_MIN
-        && ($midStretch === null || $midStretch <= GF_HOLD_MID_STRETCH_MAX)
-    ) {
-        // mid未更新／ほぼ動いていない＋実績だけ遅い → 意図在庫（または mid 追従失敗の代理）
-        $out['kind'] = 'hold';
-        $out['is_intentional_hold'] = true;
-        $out['exclude_day_learning'] = true;
+    // まだ収穫可能日＋猶予に達していない（②が伸びていれば生物遅れ）
+    if ($refDays <= $readyDays + (float)GF_INTENTIONAL_HOLD_GRACE_DAYS) {
+        $stretch = $out['mid_stretch'];
+        $out['kind'] = ($stretch !== null && $stretch >= GF_BIO_MID_STRETCH_MIN) ? 'bio' : 'on_time';
         return $out;
     }
-
-    $out['kind'] = 'unclear';
+    // 収穫可能なのに残している
+    if ($stockoutRisk) {
+        $out['kind'] = 'extend';
+        return $out;
+    }
+    $out['kind'] = 'hold';
     $out['is_intentional_hold'] = true;
     $out['exclude_day_learning'] = true;
     return $out;
@@ -758,7 +734,7 @@ function supply_open_effective_cycle_rows(mysqli $link, ?string $today = null): 
 {
     $today = $today ?: date('Y-m-d');
     $currentWeek = gcal_week_start_sunday($today);
-    $out = [];
+    $prelim = [];
     foreach (supply_open_inventory_cycle_rows($link, $today) as $row) {
         $plant = (string)($row['plant_date'] ?? '');
         $pdPlant = $row['pred_days_plant'];
@@ -767,20 +743,55 @@ function supply_open_effective_cycle_rows(mysqli $link, ?string $today = null): 
         if ($effDays === null || $plant === '') {
             continue;
         }
-        $plantExp = (string)$row['expected_harvest'];
-        $kind = (string)($row['delay_kind'] ?? '');
-        $isHold = !empty($row['is_intentional_hold']);
-        // 意図在庫・mix・unclear: ①到達時点で利用可能 → 当週。bio は mid 週を使う
-        if ($isHold && $kind !== 'bio' && $pdPlant !== null) {
-            $effDays = min((float)$effDays, (float)$pdPlant);
-            $expectedEff = $plantExp;
-            $w = $currentWeek;
-        } else {
-            $expectedEff = date('Y-m-d', strtotime($plant . ' +' . (int)round((float)$effDays) . ' day'));
-            if ($expectedEff < $today) {
+        $expectedEff = date('Y-m-d', strtotime($plant . ' +' . (int)round((float)$effDays) . ' day'));
+        $w = $expectedEff < $today ? $currentWeek : gcal_week_start_sunday($expectedEff);
+        $prelim[] = $row + [
+            'expected_harvest' => $expectedEff,
+            'week_start_date' => $w,
+            'pred_days' => (float)$effDays,
+            'pred_days_effective' => (float)$effDays,
+            '_pd_plant' => $pdPlant,
+            '_pd_latest' => $pdLatest,
+        ];
+    }
+    $fc = [];
+    foreach ($prelim as $row) {
+        $w = $row['week_start_date'];
+        $fc[$w] = ($fc[$w] ?? 0.0) + (float)$row['remain_kg'];
+    }
+    $stockoutRisk = false;
+    $nearEnd = date('Y-m-d', strtotime($currentWeek . ' +21 day'));
+    foreach (supply_surplus_rows_from_fc($link, $fc) as $sr) {
+        if (!empty($sr['is_elapsed'])) {
+            continue;
+        }
+        if ($sr['week_start_date'] > $nearEnd) {
+            break;
+        }
+        if (supply_week_is_stockout((float)$sr['surplus_kg'], $sr['ship_kg'] === null ? null : (float)$sr['ship_kg'])) {
+            $stockoutRisk = true;
+            break;
+        }
+    }
+    $out = [];
+    foreach ($prelim as $row) {
+        $plant = (string)$row['plant_date'];
+        $pdPlant = $row['_pd_plant'];
+        $pdLatest = $row['_pd_latest'];
+        $effDays = (float)$row['pred_days_effective'];
+        $expectedEff = (string)$row['expected_harvest'];
+        $hs = $row['harvest_start'] !== null && $row['harvest_start'] !== ''
+            ? (string)$row['harvest_start'] : null;
+        $refEnd = $hs ?: $today;
+        $refDays = (float)max(1, (int)round((strtotime($refEnd) - strtotime($plant)) / 86400));
+        $delay = supply_delay_kind($pdPlant, $pdLatest, $refDays, $stockoutRisk);
+        $kind = (string)$delay['kind'];
+        $isHold = !empty($delay['is_intentional_hold']);
+        $w = $row['week_start_date'];
+        // 意図在庫も栽培延長も、予定を過ぎた残は当週の利用可能在庫
+        if ($expectedEff <= $today || $kind === 'hold' || $kind === 'extend') {
+            if ($expectedEff <= $today) {
                 $w = $currentWeek;
-            } else {
-                $w = gcal_week_start_sunday($expectedEff);
             }
         }
         $out[] = [
@@ -797,10 +808,12 @@ function supply_open_effective_cycle_rows(mysqli $link, ?string $today = null): 
             'week_start_date' => $w,
             'is_overdue' => ($w < $currentWeek || $expectedEff < $today),
             'is_intentional_hold' => $isHold,
-            'delay_kind' => $kind !== '' ? $kind : ($isHold ? 'hold' : 'on_time'),
+            'delay_kind' => $kind,
+            'exclude_day_learning' => !empty($delay['exclude_day_learning']),
+            'pred_days' => $effDays,
             'pred_days_plant' => $pdPlant,
             'pred_days_latest' => $pdLatest,
-            'pred_days_effective' => (float)$effDays,
+            'pred_days_effective' => $effDays,
         ];
     }
     usort($out, static function ($a, $b) {
@@ -1027,7 +1040,8 @@ function supply_surplus_rows_from_fc(mysqli $link, array $fcByWeek, ?string $hor
  */
 function supply_inventory_surplus_rows(mysqli $link, ?string $horizonEnd = null): array
 {
-    $split = supply_open_remain_for_inventory($link);
+    // 予測本線＝②実効（正本 §9）
+    $split = supply_open_remain_for_effective($link);
     return supply_surplus_rows_from_fc($link, $split['fc_by_week'], $horizonEnd);
 }
 
@@ -1981,7 +1995,7 @@ function supply_pred_drift_metrics(mysqli $link): array
     $nKg = 0;
     $wDays = 0;
     $wKg = 0;
-    foreach (supply_open_inventory_cycle_rows($link) as $row) {
+    foreach (supply_open_effective_cycle_rows($link) as $row) {
         $d1 = $row['pred_days_plant'];
         $d2 = $row['pred_days_latest'];
         if ($d1 === null || $d2 === null) {
