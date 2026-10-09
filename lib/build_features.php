@@ -9,6 +9,37 @@ function getAsof($link) {
     return $row['asof'] ?? null;
 }
 
+/** 定植時モデル学習（plant_plus_w）に合わせた特徴量ウィンドウ日数 */
+const GF_PLANT_FEATURE_W_DAYS = 14;
+
+/**
+ * 定植時予測の特徴量 asof（正本 §6）。
+ * min(plant+14, 天気末日, harvest_start-1)。収穫予定の起点は plant_date のまま。
+ */
+function plant_feature_asof(mysqli $link, string $plantDate, ?string $harvestStart = null): string
+{
+    $weatherAsof = getAsof($link);
+    if ($weatherAsof === null || $weatherAsof === '') {
+        $weatherAsof = date('Y-m-d');
+    }
+    $target = date('Y-m-d', strtotime($plantDate . ' +' . GF_PLANT_FEATURE_W_DAYS . ' days'));
+    $asof = $target;
+    if ($asof > $weatherAsof) {
+        $asof = $weatherAsof;
+    }
+    if ($harvestStart !== null && $harvestStart !== '') {
+        $pre = date('Y-m-d', strtotime($harvestStart . ' -1 day'));
+        if ($pre < $asof) {
+            $asof = $pre;
+        }
+    }
+    // plant より前にはしない
+    if ($asof < $plantDate) {
+        $asof = $plantDate;
+    }
+    return $asof;
+}
+
 function aggregateTemperature($link, $plantDate, $asof) {
     if ($asof >= $plantDate) {
         $d1 = $plantDate;
@@ -216,11 +247,20 @@ function build_features_array($link, $cycleId, $asofDate = null) {
     if (!$c) { throw new RuntimeException("cycle not found: {$cycleId}"); }
 
     $plantDate = $c['plant_date'];
-    $sowDate   = $c['sow_date'];
     $groupType = $c['group_type'];
     $bedId     = (int)$c['bed_id'];
 
     $temp = aggregateTemperature($link, $plantDate, $asof);
+    if (($temp['temp_avg_mean'] ?? null) === null) {
+        static $weatherSyncTried = false;
+        if (!$weatherSyncTried) {
+            $weatherSyncTried = true;
+            require_once __DIR__ . '/weather_ops.php';
+            gf_weather_sync_if_stale($link);
+            $asof = getAsof($link) ?: $asof;
+            $temp = aggregateTemperature($link, $plantDate, $asof);
+        }
+    }
     if (($temp['temp_avg_mean'] ?? null) === null) { throw new RuntimeException('temperature data missing'); }
 
     $peer = findRecentPeerStats($link, $groupType, $asof, $plantDate);
@@ -230,7 +270,8 @@ function build_features_array($link, $cycleId, $asofDate = null) {
         $yoy['yoy_mean_days']  = $peer['peer_mean_days'];
     }
 
-    $nurseryDays = $sowDate ? (int)((strtotime($plantDate) - strtotime($sowDate)) / 86400) : 21;
+    // 播種日は記録するが予測特徴には使わない（正本§6）。モデル次元維持のため固定値。
+    $nurseryDays = 21;
     $plantMonth  = (int)date('n', strtotime($plantDate));
     $groupNormal = ($groupType === 'normal' || $groupType === '通常') ? 1 : 0;
 

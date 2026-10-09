@@ -6,9 +6,13 @@
 require_once __DIR__ . '/../db.php';
 require_once __DIR__ . '/../lib/build_features.php';
 require_once __DIR__ . '/../lib/predict_ridge.php';
+require_once __DIR__ . '/../lib/weather_ops.php';
 require_once __DIR__ . '/../api/logging.php';
 
 mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+
+$weather = gf_weather_sync_if_stale($link);
+echo 'WEATHER ' . ($weather['message'] ?? '') . ' fetched=' . (!empty($weather['fetched']) ? '1' : '0') . "\n";
 
 $res = mysqli_query(
     $link,
@@ -27,10 +31,11 @@ foreach ($ids as $cycleId) {
         $out = rebuild_and_predict_cycle($link, $cycleId, true, 'mid');
         $ok++;
         echo sprintf(
-            "OK cycle=%d days=%.1f yield=%.1f postproc=%s\n",
+            "OK cycle=%d days=%.1f yield=%.1f lock=%s postproc=%s\n",
             $cycleId,
             $out['pred']['days'],
             $out['pred']['yield'],
+            (string)($out['pred']['yield_lock'] ?? 'mid'),
             $out['postproc_total_kg'] === null ? 'null' : (string)$out['postproc_total_kg']
         );
     } catch (Throwable $e) {
