@@ -86,6 +86,50 @@ if ($usable) {
     }
 }
 
+$completed = is_array($acc['completed'] ?? null) ? $acc['completed'] : null;
+$plant = is_array($acc['plant'] ?? null) ? $acc['plant'] : null;
+$legacy = is_array($acc['legacy_mid'] ?? null) ? $acc['legacy_mid'] : null;
+
+$kgOf = static function (?array $block): ?int {
+    if ($block === null || ($block['mae_kg'] ?? null) === null) {
+        return null;
+    }
+    return (int)round((float)$block['mae_kg']);
+};
+$driftKg = $maeKg !== null ? (int)round((float)$maeKg) : null;
+$doneKg = $kgOf($completed);
+$plantKg = $kgOf($plant);
+$doneDays = ($completed['mae_days'] ?? null) !== null ? (float)$completed['mae_days'] : null;
+$doneNDays = (int)($completed['n_days'] ?? 0);
+$legDays = ($legacy['mae_days'] ?? null) !== null ? (float)$legacy['mae_days'] : null;
+$legNDays = (int)($legacy['n_days'] ?? 0);
+
+$readLines = [];
+if ($usable && $driftKg !== null && $doneKg !== null) {
+    $bits = [
+        '栽培中の①と②の差は平均' . $driftKg . 'kg',
+        '収穫済みと途中予測の差は平均' . $doneKg . 'kg',
+    ];
+    if ($plantKg !== null) {
+        $bits[] = '定植時と実績の差は平均' . $plantKg . 'kg';
+    }
+    if (abs($doneKg - $driftKg) <= 10 && $doneKg >= 15) {
+        $tail = '途中で直しても収穫との差は同じ大きさです。需給のkgはこの差を割り引いて読みます。';
+    } elseif ($doneKg <= $driftKg - 10) {
+        $tail = '途中予測の方が収穫に近いです。';
+    } else {
+        $tail = '需給のkgは、この差を見て読みます。';
+    }
+    $readLines[] = 'kgは、' . implode('、', $bits) . '。' . $tail;
+}
+if ($doneDays !== null && $doneNDays > 0 && $legDays !== null && $legNDays > $doneNDays && $legDays >= $doneDays + 3) {
+    $readLines[] = '日数は、意図在庫を外すと平均' . number_format($doneDays, 1) . '日、戻すと平均'
+        . number_format($legDays, 1) . '日まで広がります。大きなずれは置いた日数で、生育予測の遅れではありません。';
+}
+if ($readLines === []) {
+    $readLines[] = $overallHint;
+}
+
 ?>
 <!DOCTYPE html>
 <html lang="ja">
@@ -115,7 +159,9 @@ if ($usable) {
   </div>
 
   <div class="job-card mb-3">
-    <div class="job-meta"><?= htmlspecialchars($overallHint, ENT_QUOTES, 'UTF-8') ?></div>
+    <?php foreach ($readLines as $line): ?>
+    <div class="job-meta mb-2"><?= htmlspecialchars($line, ENT_QUOTES, 'UTF-8') ?></div>
+    <?php endforeach; ?>
   </div>
 </div>
 <?php forecast_nav('settings'); ?>
