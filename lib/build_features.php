@@ -33,10 +33,7 @@ function plant_feature_asof(mysqli $link, string $plantDate, ?string $harvestSta
             $asof = $pre;
         }
     }
-    // plant より前にはしない
-    if ($asof < $plantDate) {
-        $asof = $plantDate;
-    }
+    // 定植当日は天気末日が定植日より前になる。定植日へ切り上げると窓が空になり予測が残らない。
     return $asof;
 }
 
