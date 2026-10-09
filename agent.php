@@ -146,7 +146,7 @@ if ($readLines === []) {
   <div class="gf-header">
     <div>
       <h1 class="page-title">予測精度</h1>
-      <p class="page-sub">栽培中の①と②の差 · <?= htmlspecialchars($checkedAt, ENT_QUOTES, 'UTF-8') ?></p>
+      <p class="page-sub">見る数字はkgの平均誤差と、日数を意図在庫で分けたもの · <?= htmlspecialchars($checkedAt, ENT_QUOTES, 'UTF-8') ?></p>
     </div>
   </div>
 
@@ -155,6 +155,39 @@ if ($readLines === []) {
       <div class="stat-label">予測の監視</div>
       <div class="stat-value" style="font-size:1.15rem"><?= htmlspecialchars($overall, ENT_QUOTES, 'UTF-8') ?></div>
       <div class="stat-sub"><?= $usable ? ('栽培中 ' . $nEval . '床') : '栽培中の件数が足りません' ?></div>
+    </div>
+  </div>
+
+  <h2 class="section-title">kgの平均誤差</h2>
+  <div class="stat-row mb-3">
+    <div class="stat-card">
+      <div class="stat-label">栽培中 · ①と②</div>
+      <div class="stat-value" style="font-size:1.1rem"><?= $driftKg === null ? '—' : ($driftKg . 'kg') ?></div>
+      <div class="stat-sub">定植時から動いた幅 · <?= (int)$nEval ?>床</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">収穫済み · 途中予測</div>
+      <div class="stat-value" style="font-size:1.1rem"><?= $doneKg === null ? '—' : ($doneKg . 'kg') ?></div>
+      <div class="stat-sub">実績との差 · <?= (int)($completed['n'] ?? 0) ?>床</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">収穫済み · 定植時</div>
+      <div class="stat-value" style="font-size:1.1rem"><?= $plantKg === null ? '—' : ($plantKg . 'kg') ?></div>
+      <div class="stat-sub">実績との差 · <?= (int)($plant['n'] ?? 0) ?>床</div>
+    </div>
+  </div>
+
+  <h2 class="section-title">日数の平均誤差</h2>
+  <div class="stat-row mb-3">
+    <div class="stat-card">
+      <div class="stat-label">意図在庫を外す</div>
+      <div class="stat-value" style="font-size:1.1rem"><?= $doneDays === null ? '—' : (number_format($doneDays, 1) . '日') ?></div>
+      <div class="stat-sub">収穫済み · <?= $doneNDays ?>床</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">意図在庫を含む</div>
+      <div class="stat-value" style="font-size:1.1rem"><?= $legDays === null ? '—' : (number_format($legDays, 1) . '日') ?></div>
+      <div class="stat-sub">収穫済み · <?= $legNDays ?>床</div>
     </div>
   </div>
 
