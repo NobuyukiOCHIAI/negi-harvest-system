@@ -46,7 +46,7 @@ function gf_mgmt_alerts_bundle(mysqli $link, ?array $trust = null): array
             'id' => 'promise_over_capacity',
             'category' => 'inventory_break',
             'severity' => $promise['status'] === 'critical' ? 'critical' : 'warn',
-            'title' => '約束が計画能力を超える週がある',
+            'title' => '在庫割れの週がある',
             'detail' => (string)$promise['headline'],
             'href' => 'capacity.php#sec-outlook',
             'badge' => ((int)$promise['breach_weeks']) . '週',
