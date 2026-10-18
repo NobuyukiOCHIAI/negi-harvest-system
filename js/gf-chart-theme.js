@@ -20,8 +20,8 @@
     labels: { boxWidth: 10, font: { size: 10 }, padding: 10 },
   };
 
-  function yKg(beginAtZero) {
-    return {
+  function yKg(beginAtZero, maxKg) {
+    const scale = {
       beginAtZero: !!beginAtZero,
       ticks: { callback: (v) => v + 'kg', font: { size: 10 } },
       grid: {
@@ -29,7 +29,25 @@
         lineWidth: (ctx) => (ctx.tick && ctx.tick.value === 0 ? 1.5 : 1),
       },
     };
+    if (maxKg != null) {
+      scale.max = maxKg;
+    }
+    return scale;
   }
+
+  /** 週の位置にマウスを置くと、各系列のkg（整数）を出す */
+  const hoverIndex = { mode: 'index', intersect: false };
+  const tooltipKg = {
+    callbacks: {
+      label(ctx) {
+        const y = ctx.parsed && ctx.parsed.y;
+        if (y == null || Number.isNaN(y)) {
+          return ctx.dataset.label || '';
+        }
+        return (ctx.dataset.label || '') + ': ' + Math.round(y) + 'kg';
+      },
+    },
+  };
 
   /** 0kg 水平線 */
   const zeroPlugin = {
@@ -140,6 +158,8 @@
     C,
     legend,
     yKg,
+    hoverIndex,
+    tooltipKg,
     zeroPlugin,
     dsPlan,
     dsPlanted,

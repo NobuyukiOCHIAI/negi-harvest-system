@@ -295,7 +295,7 @@ $promiseSum = gf_promise_vs_capacity_summary($link, 8);
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="css/mobile-ui.css?v=20260912c">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <script src="js/gf-chart-theme.js?v=20260912c"></script>
+  <script src="js/gf-chart-theme.js?v=20261018a"></script>
 </head>
 <body>
 <div class="container py-3">
@@ -326,7 +326,7 @@ $promiseSum = gf_promise_vs_capacity_summary($link, 8);
     <div class="chart-title">累計在庫の先行き（本線）</div>
     <p class="page-sub mb-2"><span class="chart-swatch plan"></span>計画どおり · <span class="chart-swatch planted"></span>いまの畑のまま</p>
     <div class="chart-wrap tall"><canvas id="trustCumChart"></canvas></div>
-    <p class="page-sub mt-2 mb-0">この画面の主チャート。緑=計画どおりに定植した場合 · 灰破線=いまの畑のまま（植えないと先でゼロに見える＝定植催促。公式予測ではない）。</p>
+    <p class="page-sub mt-2 mb-0">この画面の主チャート。緑=計画どおりに定植した場合 · 灰破線=いまの畑のまま（植えないと先でゼロに見える＝定植催促。公式予測ではない）。縦軸は2000kgまで。超える週は線が上限に張り付き、マウスオーバーの数値は実際のkg。</p>
   </div>
   <?php endif; ?>
 
@@ -471,8 +471,9 @@ $promiseSum = gf_promise_vs_capacity_summary($link, 8);
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      plugins: { legend: G.legend },
-      scales: { y: G.yKg(false) },
+      interaction: G.hoverIndex,
+      plugins: { legend: G.legend, tooltip: G.tooltipKg },
+      scales: { y: G.yKg(false, 2000) },
     },
     plugins: [G.zeroPlugin],
   });
@@ -514,7 +515,8 @@ $promiseSum = gf_promise_vs_capacity_summary($link, 8);
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      plugins: { legend: G.legend },
+      interaction: G.hoverIndex,
+      plugins: { legend: G.legend, tooltip: G.tooltipKg },
       scales: {
         y: G.yKg(false),
         x: {
