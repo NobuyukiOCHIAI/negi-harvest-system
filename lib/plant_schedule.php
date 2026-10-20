@@ -13,7 +13,7 @@ const GF_SHORTAGE_THRESHOLD_KG = 20.0;
 
 /**
  * 週次: 収穫予測合計 / 出荷コミット / ギャップ（出荷 − 予測）
- * week_start = 日曜起点
+ * week_start = 月曜起点
  *
  * @return list<array{week:string,forecast_kg:float,ship_kg:float,gap_kg:float}>
  */
@@ -24,19 +24,21 @@ function plant_schedule_weekly_gaps(mysqli $link, int $weeksAhead = 12): array
     $horizonEnd = date('Y-m-d', strtotime('+' . $weeksAhead . ' weeks', strtotime($currentWeek)));
 
     $forecastByWeek = [];
+    $weekSql = gf_sql_week_start(
+        'DATE_ADD(c.plant_date, INTERVAL CAST(ROUND(pr.pred_days) AS SIGNED) DAY)'
+    );
     $sql = "
 SELECT
-  DATE_SUB(
-    DATE_ADD(c.plant_date, INTERVAL CAST(ROUND(pr.pred_days) AS SIGNED) DAY),
-    INTERVAL (DAYOFWEEK(DATE_ADD(c.plant_date, INTERVAL CAST(ROUND(pr.pred_days) AS SIGNED) DAY)) - 1) DAY
-  ) AS week_start_date,
+  {$weekSql} AS week_start_date,
   COALESCE(pr.postproc_total_kg, pr.pred_total_kg) AS forecast_kg
 FROM cycles c
+JOIN beds b ON b.id = c.bed_id
 JOIN predictions pr ON pr.cycle_id = c.id
  AND NOT EXISTS (
    SELECT 1 FROM predictions p2 WHERE p2.cycle_id = pr.cycle_id AND p2.created_at > pr.created_at
  )
 WHERE c.harvest_end IS NULL AND pr.pred_days IS NOT NULL
+  AND b.active = 1
 ";
     $res = mysqli_query($link, $sql);
     if ($res) {
@@ -178,7 +180,7 @@ function plant_schedule_season_defaults(mysqli $link): array
 }
 
 /**
- * 定植日 + 想定日数 → 収穫週（日曜起点）
+ * 定植日 + 想定日数 → 収穫週（月曜起点）
  */
 function plant_schedule_harvest_week_from_plant(string $plantDate, float $days): string
 {
@@ -215,6 +217,51 @@ function plant_schedule_risk_months(mysqli $link): array
 }
 
 /**
+ * 同一ベッドの未実施定植が複数あるとき、最も古い1件だけ残し他は skipped。
+ * 空きベッドへ毎日 ensure すると「遅れ」行が積み上がるのを防ぐ。
+ */
+function plant_schedule_collapse_open_dupes(mysqli $link): int
+{
+    $chk = mysqli_query($link, "SHOW TABLES LIKE 'plant_schedule'");
+    $has = $chk && mysqli_num_rows($chk) > 0;
+    if ($chk) {
+        mysqli_free_result($chk);
+    }
+    if (!$has) {
+        return 0;
+    }
+    $res = mysqli_query(
+        $link,
+        "SELECT id, bed_id FROM plant_schedule
+         WHERE status IN ('planned','approved')
+         ORDER BY bed_id ASC, planned_plant_date ASC, id ASC"
+    );
+    if (!$res) {
+        return 0;
+    }
+    $skipIds = [];
+    $seen = [];
+    while ($row = mysqli_fetch_assoc($res)) {
+        $bedId = (int)$row['bed_id'];
+        if (isset($seen[$bedId])) {
+            $skipIds[] = (int)$row['id'];
+            continue;
+        }
+        $seen[$bedId] = true;
+    }
+    mysqli_free_result($res);
+    if (!$skipIds) {
+        return 0;
+    }
+    $in = implode(',', array_map('intval', $skipIds));
+    mysqli_query(
+        $link,
+        "UPDATE plant_schedule SET status = 'skipped' WHERE id IN ({$in}) AND status IN ('planned','approved')"
+    );
+    return (int)mysqli_affected_rows($link);
+}
+
+/**
  * planned/approved の既存割当 bed_id セット
  *
  * @return array<int,true>
@@ -223,9 +270,9 @@ function plant_schedule_reserved_beds(mysqli $link): array
 {
     $res = mysqli_query(
         $link,
-        "SELECT bed_id FROM plant_schedule
-         WHERE status IN ('planned','approved')
-           AND planned_plant_date >= CURDATE()"
+        "SELECT bed_id FROM plant_schedule s
+         JOIN beds b ON b.id = s.bed_id AND b.active = 1
+         WHERE s.status IN ('planned','approved')"
     );
     $out = [];
     if ($res) {
@@ -424,7 +471,7 @@ function plant_schedule_list(mysqli $link, ?string $from = null, ?string $to = n
     $sql = "
 SELECT s.*, b.name AS bed_name, b.group_type
 FROM plant_schedule s
-JOIN beds b ON b.id = s.bed_id
+JOIN beds b ON b.id = s.bed_id AND b.active = 1
 WHERE s.planned_plant_date BETWEEN ? AND ?
 ORDER BY s.planned_plant_date ASC, b.name ASC
 ";
@@ -482,7 +529,7 @@ function plant_schedule_simulate(mysqli $link, int $weeksAhead = 12, ?float $gap
         $sql = "
 SELECT s.*, b.name AS bed_name, b.group_type
 FROM plant_schedule s
-JOIN beds b ON b.id = s.bed_id
+JOIN beds b ON b.id = s.bed_id AND b.active = 1
 WHERE s.status IN ('planned','approved')
 ORDER BY s.planned_plant_date ASC, b.name ASC
 ";

@@ -360,7 +360,7 @@ function rotation_reserved_free_dates(mysqli $link, float $defaultDays): array
 /**
  * 前年同週の実績収穫kg
  *
- * @return array<string,float> week_start(日曜) => kg
+ * @return array<string,float> week_start(月曜) => kg
  */
 function rotation_yoy_harvest_by_week(mysqli $link, string $fromWeek, string $toWeek): array
 {
@@ -372,7 +372,7 @@ function rotation_yoy_harvest_by_week(mysqli $link, string $fromWeek, string $to
     while ($ts <= $end) {
         $w = date('Y-m-d', $ts);
         $ly = date('Y-m-d', strtotime($w . ' -1 year'));
-        // 前年の同じ曜日に揃える（日曜起点を維持）
+        // 前年の同じ曜日に揃える（月曜起点）
         $ly = gcal_week_start_sunday($ly);
         $weekList[$w] = $ly;
         $ts = strtotime('+7 days', $ts);
@@ -383,9 +383,10 @@ function rotation_yoy_harvest_by_week(mysqli $link, string $fromWeek, string $to
 
     $minLy = min($weekList);
     $maxLy = max($weekList);
+    $weekSql = gf_sql_week_start('h.harvest_date');
     $sql = "
 SELECT
-  DATE_SUB(h.harvest_date, INTERVAL (DAYOFWEEK(h.harvest_date) - 1) DAY) AS week_start,
+  {$weekSql} AS week_start,
   SUM(h.harvest_kg) AS kg
 FROM harvests h
 WHERE h.harvest_date BETWEEN DATE_SUB(?, INTERVAL 7 DAY) AND DATE_ADD(?, INTERVAL 7 DAY)

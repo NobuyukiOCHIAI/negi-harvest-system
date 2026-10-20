@@ -1964,7 +1964,7 @@ INSERT INTO `weather_daily` (`date`, `temp_avg`, `temp_max`, `temp_min`, `variat
 --
 DROP TABLE IF EXISTS `harvest_actual_base_v`;
 
-CREATE ALGORITHM=UNDEFINED VIEW `harvest_actual_base_v` AS select `c`.`id` AS `cycle_id`,`c`.`harvest_end` AS `final_dt`,(`c`.`harvest_end` - interval (dayofweek(`c`.`harvest_end`) - 1) day) AS `week_start_date`,(`c`.`harvest_end` - interval (dayofmonth(`c`.`harvest_end`) - 1) day) AS `month_start_date`,coalesce((select sum(`h`.`harvest_kg`) from `harvests` `h` where (`h`.`cycle_id` = `c`.`id`)),0) AS `actual_total_kg` from `cycles` `c` where (`c`.`harvest_end` is not null);
+CREATE ALGORITHM=UNDEFINED VIEW `harvest_actual_base_v` AS select `c`.`id` AS `cycle_id`,`c`.`harvest_end` AS `final_dt`,(`c`.`harvest_end` - interval weekday(`c`.`harvest_end`) day) AS `week_start_date`,(`c`.`harvest_end` - interval (dayofmonth(`c`.`harvest_end`) - 1) day) AS `month_start_date`,coalesce((select sum(`h`.`harvest_kg`) from `harvests` `h` where (`h`.`cycle_id` = `c`.`id`)),0) AS `actual_total_kg` from `cycles` `c` where (`c`.`harvest_end` is not null);
 
 -- --------------------------------------------------------
 
@@ -1977,7 +1977,7 @@ CREATE ALGORITHM=UNDEFINED VIEW `weekly_harvest_forecast_v` AS
 SELECT
   (
     (c.plant_date + INTERVAL CAST(ROUND(lp.pred_days,0) AS SIGNED) DAY)
-    - INTERVAL (DAYOFWEEK(c.plant_date + INTERVAL CAST(ROUND(lp.pred_days,0) AS SIGNED) DAY) - 1) DAY
+    - INTERVAL WEEKDAY(c.plant_date + INTERVAL CAST(ROUND(lp.pred_days,0) AS SIGNED) DAY) DAY
   ) AS week_start_date,
   SUM(COALESCE(lp.postproc_total_kg, lp.pred_total_kg, 0)) AS forecast_total_kg,
   COUNT(0) AS beds_count
@@ -1994,7 +1994,7 @@ WHERE c.harvest_end IS NULL
 GROUP BY
   (
     (c.plant_date + INTERVAL CAST(ROUND(lp.pred_days,0) AS SIGNED) DAY)
-    - INTERVAL (DAYOFWEEK(c.plant_date + INTERVAL CAST(ROUND(lp.pred_days,0) AS SIGNED) DAY) - 1) DAY
+    - INTERVAL WEEKDAY(c.plant_date + INTERVAL CAST(ROUND(lp.pred_days,0) AS SIGNED) DAY) DAY
   );
 
 --

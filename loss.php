@@ -15,7 +15,7 @@ $fromWeek = date('Y-m-d', strtotime('-' . $weeksBack . ' weeks', strtotime($curr
 $harvestByWeek = [];
 $res = mysqli_query(
     $link,
-    "SELECT DATE_SUB(h.harvest_date, INTERVAL (DAYOFWEEK(h.harvest_date)-1) DAY) AS week_start,
+    'SELECT ' . gf_sql_week_start('h.harvest_date') . " AS week_start,
             SUM(h.harvest_kg) AS harvest_kg,
             SUM(CASE WHEN h.loss_type_id = 2 THEN h.harvest_kg ELSE 0 END) AS gomi_kg
      FROM harvests h
@@ -86,7 +86,7 @@ while ($ts <= $end) {
     $ts = strtotime('+7 days', $ts);
 }
 
-$chartLabels = array_map(static fn($r) => date('n/j', strtotime($r['week'])), $rows);
+$chartLabels = array_map(static fn($r) => format_sunday_week($r['week']), $rows);
 $chartH = array_column($rows, 'harvest_kg');
 $chartS = array_column($rows, 'ship_kg');
 $chartL = array_column($rows, 'loss_kg');
@@ -100,7 +100,7 @@ $overallRate = $sumH > 0 ? round(100.0 * ($sumH - $sumS) / $sumH, 1) : null;
   <meta name="theme-color" content="#1b7a4a">
   <title>ロス分析</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link rel="stylesheet" href="css/mobile-ui.css">
+  <link rel="stylesheet" href="css/mobile-ui.css?v=20260814p">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -135,7 +135,7 @@ $overallRate = $sumH > 0 ? round(100.0 * ($sumH - $sumS) / $sumH, 1) : null;
     </div>
     <div class="stat-card <?= $sumLoss > 50 ? 'warn' : '' ?>">
       <div class="stat-label">差(ロス候補)</div>
-      <div class="stat-value" style="font-size:1.1rem"><?= number_format($sumLoss, 0) ?></div>
+      <div class="stat-value" style="font-size:1.1rem"><?= h_num($sumLoss, 0) ?></div>
     </div>
   </div>
   <p class="page-sub mt-2">
@@ -164,12 +164,12 @@ $overallRate = $sumH > 0 ? round(100.0 * ($sumH - $sumS) / $sumH, 1) : null;
       <tbody>
         <?php foreach (array_reverse($rows) as $r): ?>
           <tr class="<?= $r['loss_kg'] > 80 ? 'table-warning' : '' ?>">
-            <td><?= htmlspecialchars(h_month_week($r['week']), ENT_QUOTES, 'UTF-8') ?></td>
+            <td><?= h_sunday_week($r['week']) ?></td>
             <td class="text-end"><?= number_format($r['harvest_kg'], 0) ?></td>
             <td class="text-end"><?= number_format($r['gomi_kg'], 0) ?></td>
             <td class="text-end"><?= number_format($r['ship_kg'], 0) ?></td>
-            <td class="text-end fw-bold"><?= number_format($r['loss_kg'], 0) ?></td>
-            <td class="text-end"><?= $r['loss_rate'] === null ? '—' : $r['loss_rate'] . '%' ?></td>
+            <td class="text-end fw-bold"><?= h_num($r['loss_kg'], 0) ?></td>
+            <td class="text-end"><?= h_num($r['loss_rate'], 1, '—', false, '%') ?></td>
           </tr>
         <?php endforeach; ?>
       </tbody>
@@ -177,7 +177,7 @@ $overallRate = $sumH > 0 ? round(100.0 * ($sumH - $sumS) / $sumH, 1) : null;
   </div>
   <p class="page-sub">差が正=収穫が多い（選別ロス・在庫・過栽培・未出荷）。負=出荷が収穫超（在庫取崩し・記録漏れ）。</p>
 </div>
-<?php forecast_nav('inventory'); ?>
+<?php forecast_nav('settings'); ?>
 <script>
 (() => {
   const el = document.getElementById('lossChart');

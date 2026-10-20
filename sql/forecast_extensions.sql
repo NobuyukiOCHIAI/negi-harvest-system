@@ -61,7 +61,7 @@ CREATE OR REPLACE VIEW weekly_harvest_forecast_v AS
 SELECT
   DATE_SUB(
     DATE_ADD(c.plant_date, INTERVAL CAST(ROUND(pr.pred_days) AS SIGNED) DAY),
-    INTERVAL (DAYOFWEEK(DATE_ADD(c.plant_date, INTERVAL CAST(ROUND(pr.pred_days) AS SIGNED) DAY)) - 1) DAY
+    INTERVAL WEEKDAY(DATE_ADD(c.plant_date, INTERVAL CAST(ROUND(pr.pred_days) AS SIGNED) DAY)) DAY
   ) AS week_start_date,
   SUM(COALESCE(pr.postproc_total_kg, pr.pred_total_kg)) AS forecast_total_kg,
   COUNT(*) AS beds_count
@@ -81,7 +81,7 @@ CREATE OR REPLACE VIEW harvest_actual_base_v AS
 SELECT
   c.id AS cycle_id,
   c.harvest_end AS final_dt,
-  DATE_SUB(c.harvest_end, INTERVAL (DAYOFWEEK(c.harvest_end)-1) DAY) AS week_start_date,
+  DATE_SUB(c.harvest_end, INTERVAL WEEKDAY(c.harvest_end) DAY) AS week_start_date,
   DATE_SUB(c.harvest_end, INTERVAL (DAYOFMONTH(c.harvest_end)-1) DAY) AS month_start_date,
   COALESCE((SELECT SUM(h.harvest_kg) FROM harvests h WHERE h.cycle_id = c.id),0) AS actual_total_kg
 FROM cycles c

@@ -70,22 +70,75 @@ function h_month_week(?string $date, string $empty = '—'): string
 }
 
 /**
- * 日曜起点の週ラベル（出荷・収穫予測・需給ブロック用）
- * 例: 8/9週（2026-08-09）
+ * 実日付 Y-m-d（作業入力・サイクル一覧用）
  */
-function format_sunday_week(?string $date, string $empty = '—'): string
+function format_ymd(?string $date, string $empty = '—'): string
 {
     if ($date === null || $date === '' || $date === '-') {
         return $empty;
     }
-    try {
-        $d = new DateTimeImmutable(substr($date, 0, 10));
-    } catch (Exception $e) {
+    return substr($date, 0, 10);
+}
+
+function h_ymd(?string $date, string $empty = '—'): string
+{
+    return htmlspecialchars(format_ymd($date, $empty), ENT_QUOTES, 'UTF-8');
+}
+
+function h_int($value, string $empty = '—'): string
+{
+    return h_num($value, 0, $empty);
+}
+
+/**
+ * HTML数値。負は赤字（.num-neg）。
+ * $signed=true なら正にも + を付ける。
+ */
+function h_num($value, int $decimals = 0, string $empty = '—', bool $signed = false, string $suffix = ''): string
+{
+    if ($value === null || $value === '') {
+        return htmlspecialchars($empty, ENT_QUOTES, 'UTF-8');
+    }
+    $n = (float)$value;
+    $text = number_format($n, $decimals, '.', ',');
+    if ($signed && $n >= 0) {
+        $text = '+' . $text;
+    }
+    $text .= $suffix;
+    $esc = htmlspecialchars($text, ENT_QUOTES, 'UTF-8');
+    if ($n < 0) {
+        return '<span class="num-neg">' . $esc . '</span>';
+    }
+    return $esc;
+}
+
+/** 差・昨対。正は +、負は赤字。 */
+function h_delta($value, int $decimals = 1, string $empty = '—', string $suffix = ''): string
+{
+    return h_num($value, $decimals, $empty, true, $suffix);
+}
+
+/**
+ * その日が属する週の月曜（Y-m-d）。出荷・収穫予定週の内部キー。
+ * 関数名 week_sunday_date は互換のため残す。
+ */
+function week_sunday_date(?string $date): ?string
+{
+    return week_monday_date($date);
+}
+
+/**
+ * 月曜起点の週ラベル（出荷・収穫予測・需給・モニター用）
+ * 例: 10/19週
+ */
+function format_sunday_week(?string $date, string $empty = '—'): string
+{
+    $sun = week_sunday_date($date);
+    if ($sun === null) {
         return $empty;
     }
-    $dow = (int)$d->format('w'); // 0=Sun
-    $sun = $d->modify('-' . $dow . ' day');
-    return sprintf('%d/%d週（%s）', (int)$sun->format('n'), (int)$sun->format('j'), $sun->format('Y-m-d'));
+    $dt = new DateTimeImmutable($sun);
+    return sprintf('%d/%d週', (int)$dt->format('n'), (int)$dt->format('j'));
 }
 
 function h_sunday_week(?string $date, string $empty = '—'): string

@@ -449,10 +449,7 @@ JOIN predictions pr ON pr.cycle_id = c.id
    SELECT 1 FROM predictions p2 WHERE p2.cycle_id = pr.cycle_id AND p2.created_at > pr.created_at
  )
 WHERE c.harvest_end IS NULL AND pr.pred_days IS NOT NULL
-  AND DATE_SUB(
-        DATE_ADD(c.plant_date, INTERVAL CAST(ROUND(pr.pred_days) AS SIGNED) DAY),
-        INTERVAL (DAYOFWEEK(DATE_ADD(c.plant_date, INTERVAL CAST(ROUND(pr.pred_days) AS SIGNED) DAY)) - 1) DAY
-      ) BETWEEN ? AND ?
+  AND " . gf_sql_week_start('DATE_ADD(c.plant_date, INTERVAL CAST(ROUND(pr.pred_days) AS SIGNED) DAY)') . " BETWEEN ? AND ?
 ";
     $stmt = mysqli_prepare($link, $sql);
     if ($stmt) {

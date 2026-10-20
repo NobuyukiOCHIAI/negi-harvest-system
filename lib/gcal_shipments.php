@@ -53,16 +53,30 @@ function gcal_find_service_account_json(): ?string
 }
 
 /**
- * 日曜起点の週開始日（MySQL DAYOFWEEK と同じ: Sun=1）。
+ * 週開始日（月曜）。出荷・収穫・需給の内部キー。
+ * MySQL は WEEKDAY（月=0）。関数名 gcal_week_start_sunday は互換の別名。
  */
-function gcal_week_start_sunday(string $ymd): string
+function gcal_week_start(string $ymd): string
 {
     $ts = strtotime($ymd . ' 12:00:00');
     if ($ts === false) {
         throw new InvalidArgumentException("bad date: {$ymd}");
     }
-    $back = (int)date('w', $ts);
+    $back = ((int)date('w', $ts) + 6) % 7; // Mon=0 .. Sun=6
     return date('Y-m-d', strtotime("-{$back} day", $ts));
+}
+
+function gcal_week_start_sunday(string $ymd): string
+{
+    return gcal_week_start($ymd);
+}
+
+/**
+ * MySQL式: $dateExpr が属する週の月曜。
+ */
+function gf_sql_week_start(string $dateExpr): string
+{
+    return "DATE_SUB({$dateExpr}, INTERVAL WEEKDAY({$dateExpr}) DAY)";
 }
 
 /**
@@ -514,7 +528,7 @@ function gcal_ensure_fresh_shipments(mysqli $link, bool $force = false): array
  * 営業リコメンド適用: 指定週の出荷コミットを manual で upsert。
  * 同一週の表示優先は manual > plan > gcal。
  *
- * @param list<string> $weeks Sunday starts
+ * @param list<string> $weeks Monday starts
  * @return array{ok:bool,updated:int,message:string}
  */
 function shipments_apply_manual_adjust(
@@ -594,7 +608,7 @@ function shipments_apply_manual_adjust(
 }
 
 /**
- * 開始〜終了（日曜週）を1週刻みで列挙
+ * 開始〜終了（月曜週）を1週刻みで列挙
  *
  * @return list<string>
  */
